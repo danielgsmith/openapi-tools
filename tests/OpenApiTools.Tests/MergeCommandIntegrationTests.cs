@@ -6,7 +6,25 @@ namespace OpenApiTools.Tests;
 public class MergeCommandIntegrationTests
 {
     private static string RepoRoot => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../"));
-    private static string ToolDll => Path.Combine(RepoRoot, "src", "OpenApiTools", "bin", "Debug", "net10.0", "OpenApiTools.dll");
+
+    private static string ToolDll
+    {
+        get
+        {
+            var tfmDir = new DirectoryInfo(AppContext.BaseDirectory);
+            var configuration = tfmDir.Parent?.Name ?? "Debug";
+            var candidate = Path.Combine(RepoRoot, "src", "OpenApiTools", "bin", configuration, "net10.0", "OpenApiTools.dll");
+            if (File.Exists(candidate))
+                return candidate;
+
+            var debugFallback = Path.Combine(RepoRoot, "src", "OpenApiTools", "bin", "Debug", "net10.0", "OpenApiTools.dll");
+            if (File.Exists(debugFallback))
+                return debugFallback;
+
+            var releaseFallback = Path.Combine(RepoRoot, "src", "OpenApiTools", "bin", "Release", "net10.0", "OpenApiTools.dll");
+            return releaseFallback;
+        }
+    }
 
     private static async Task<(int ExitCode, string StdOut, string StdErr)> RunToolAsync(params string[] args)
     {
