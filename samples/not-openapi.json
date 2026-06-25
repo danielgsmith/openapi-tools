@@ -1,0 +1,5 @@
+{
+  "name": "not-an-api",
+  "items": [1, 2, 3],
+  "meta": { "owner": "someone" }
+}

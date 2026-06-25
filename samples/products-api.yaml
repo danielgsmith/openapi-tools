@@ -1,0 +1,100 @@
+openapi: 3.0.3
+info:
+  title: Products API
+  description: Product management service.
+  version: 1.0.0
+servers:
+  - url: https://products.example.com
+paths:
+  /products:
+    get:
+      summary: List products
+      description: Returns all products.
+      operationId: listProducts
+      tags:
+        - products
+      responses:
+        '200':
+          description: A list of products
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          description: Bad request
+    post:
+      summary: Create a product
+      operationId: createProduct
+      tags:
+        - products
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Product'
+      responses:
+        '201':
+          description: Product created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+  /products/{productId}:
+    get:
+      summary: Get a product
+      description: Retrieves a product by ID.
+      operationId: getProduct
+      tags:
+        - products
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The product ID.
+      responses:
+        '200':
+          description: A single product
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '404':
+          description: Not found
+components:
+  schemas:
+    Product:
+      type: object
+      description: A product in the catalog.
+      required:
+        - id
+        - name
+        - price
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        price:
+          type: number
+          format: float
+        category:
+          type: string
+    Error:
+      type: object
+      description: Error response (different from Users API).
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        details:
+          type: string
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key auth (duplicate from users).

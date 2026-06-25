@@ -1,0 +1,26 @@
+{
+  "info": {
+    "title": "Platform API",
+    "version": "1.0.0",
+    "description": "Unified API documentation for all services"
+  },
+  "servers": [
+    { "url": "https://api.example.com", "description": "Production" }
+  ],
+  "sources": [
+    {
+      "path": "./samples/users-api.yaml",
+      "pathPrefix": "/users",
+      "operationIdPrefix": "users_",
+      "name": "Users"
+    },
+    {
+      "path": "./samples/products-api.yaml",
+      "pathPrefix": "/products",
+      "operationIdPrefix": "products_",
+      "name": "Products"
+    }
+  ],
+  "output": "./merged-platform.json",
+  "schemaConflict": "rename"
+}

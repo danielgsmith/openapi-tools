@@ -1,0 +1,11 @@
+openapi: 3.0.3
+info:
+  title: Dup OpId A
+  version: 1.0.0
+paths:
+  /a:
+    get:
+      operationId: duplicateId
+      responses:
+        '200':
+          description: ok

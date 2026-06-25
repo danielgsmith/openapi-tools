@@ -1,0 +1,236 @@
+openapi: 3.0.3
+info:
+  title: Store API
+  description: A sample store API for testing openapi-tools commands.
+  version: 2.0.0
+servers:
+  - url: https://api.store.example.com/v2
+paths:
+  /products:
+    get:
+      summary: List all products
+      description: Returns a paginated list of all products in the store.
+      operationId: listProducts
+      tags:
+        - products
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Maximum number of results to return.
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Number of results to skip.
+      responses:
+        '200':
+          description: A list of products
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Products'
+        '400':
+          description: Bad request
+        '404':
+          description: Not found
+    post:
+      summary: Create a product
+      operationId: createProduct
+      tags:
+        - products
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Product'
+      responses:
+        '201':
+          description: Product created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          description: Bad request
+  /products/{productId}:
+    get:
+      summary: Get a product by ID
+      description: Retrieves a single product by its unique identifier.
+      operationId: getProduct
+      tags:
+        - products
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The ID of the product to retrieve.
+      responses:
+        '200':
+          description: A single product
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          description: Bad request
+        '404':
+          description: Not found
+    delete:
+      summary: Delete a product
+      operationId: deleteProduct
+      tags:
+        - products
+      deprecated: true
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Product deleted
+        '404':
+          description: Not found
+  /orders:
+    get:
+      summary: List all orders
+      description: Returns a list of all orders.
+      tags:
+        - orders
+      responses:
+        '200':
+          description: A list of orders
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Orders'
+  /orders/{orderId}:
+    get:
+      summary: Get an order
+      operationId: getOrder
+      tags:
+        - orders
+      parameters:
+        - $ref: '#/components/parameters/OrderIdParam'
+      responses:
+        '200':
+          description: An order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          description: Not found
+  /health:
+    get:
+      operationId: healthCheck
+      tags:
+        - system
+      responses:
+        '200':
+          description: Service is healthy
+components:
+  schemas:
+    Product:
+      type: object
+      description: A product in the store.
+      required:
+        - id
+        - name
+        - price
+      properties:
+        id:
+          type: string
+          description: Unique product identifier.
+        name:
+          type: string
+          description: Product name.
+        price:
+          type: number
+          format: float
+          description: Product price in USD.
+        tags:
+          type: array
+          items:
+            type: string
+          description: Product tags.
+        deprecated_field:
+          type: string
+          deprecated: true
+    Products:
+      type: array
+      items:
+        $ref: '#/components/schemas/Product'
+    Order:
+      type: object
+      required:
+        - id
+        - productId
+        - quantity
+      properties:
+        id:
+          type: string
+        productId:
+          type: string
+        quantity:
+          type: integer
+        status:
+          type: string
+          enum:
+            - pending
+            - shipped
+            - delivered
+    Orders:
+      type: array
+      items:
+        $ref: '#/components/schemas/Order'
+    UnusedSchema:
+      type: object
+      description: This schema is not referenced anywhere.
+      properties:
+        foo:
+          type: string
+    Error:
+      type: object
+      description: Standard error response.
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+  parameters:
+    OrderIdParam:
+      name: orderId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: The ID of the order.
+    UnusedParam:
+      name: unused
+      in: query
+      required: false
+      schema:
+        type: string
+  responses:
+    NotFound:
+      description: Resource not found
+    UnusedResponse:
+      description: This response is not referenced.
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key authentication.
+    UnusedScheme:
+      type: basic
+      description: Unused basic auth scheme.

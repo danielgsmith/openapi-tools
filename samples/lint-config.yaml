@@ -1,0 +1,17 @@
+rules:
+  operation-must-have-description:
+    severity: error
+  operationid-required:
+    severity: error
+  no-get-with-body:
+    severity: warning
+  all-4xx-responses:
+    severity: warning
+    options:
+      codes:
+        - "400"
+        - "404"
+  schema-must-have-description:
+    severity: warning
+  param-must-have-description:
+    severity: warning

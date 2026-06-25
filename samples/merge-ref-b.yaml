@@ -1,0 +1,26 @@
+openapi: 3.0.3
+info:
+  title: Ref B API
+  version: 1.0.0
+paths:
+  /b/items:
+    get:
+      operationId: getBItems
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseEnvelope'
+components:
+  schemas:
+    ResponseEnvelope:
+      type: object
+      properties:
+        count:
+          type: integer
+        items:
+          type: array
+          items:
+            type: string

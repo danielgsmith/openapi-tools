@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>openapi-tool</ToolCommandName>
+    <PackageId>$(MSBuildProjectName)</PackageId>
+    <Authors>Daniel Smith</Authors>
+    <Description>A dotnet global tool for discovering, validating, diffing, merging, and transforming OpenAPI JSON and YAML documents.</Description>
+    <Copyright>Copyright (c) 2026 Daniel Smith</Copyright>
+    <RepositoryUrl>https://github.com/danielsmith/openapi-tools</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/danielsmith/openapi-tools</PackageProjectUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <PackageTags>openapi;swagger;dotnet-tool;yaml;json;api</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Nerdbank.GitVersioning" Version="3.8.118" PrivateAssets="All" />
+    <PackageReference Include="Spectre.Console.Cli" Version="0.49.1" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.0" />
+    <PackageReference Include="Microsoft.OpenApi" Version="1.6.22" />
+    <PackageReference Include="Microsoft.OpenApi.Readers" Version="1.6.22" />
+    <PackageReference Include="SharpYaml" Version="2.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

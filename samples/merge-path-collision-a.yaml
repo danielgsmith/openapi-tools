@@ -1,0 +1,11 @@
+openapi: 3.0.3
+info:
+  title: Path Collision A
+  version: 1.0.0
+paths:
+  /shared:
+    get:
+      operationId: getSharedA
+      responses:
+        '200':
+          description: ok

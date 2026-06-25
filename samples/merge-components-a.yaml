@@ -1,0 +1,44 @@
+openapi: 3.0.3
+info:
+  title: Components A API
+  version: 1.0.0
+paths:
+  /alpha:
+    post:
+      operationId: createAlpha
+      parameters:
+        - $ref: '#/components/parameters/TraceId'
+      requestBody:
+        $ref: '#/components/requestBodies/AlphaBody'
+      responses:
+        '201':
+          $ref: '#/components/responses/AlphaCreated'
+components:
+  parameters:
+    TraceId:
+      name: traceId
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Request correlation id.
+  requestBodies:
+    AlphaBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Alpha'
+  responses:
+    AlphaCreated:
+      description: created
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Alpha'
+  schemas:
+    Alpha:
+      type: object
+      properties:
+        id:
+          type: string

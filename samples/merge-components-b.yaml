@@ -1,0 +1,44 @@
+openapi: 3.0.3
+info:
+  title: Components B API
+  version: 1.0.0
+paths:
+  /beta:
+    post:
+      operationId: createBeta
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        $ref: '#/components/requestBodies/BetaBody'
+      responses:
+        '201':
+          $ref: '#/components/responses/BetaCreated'
+components:
+  parameters:
+    TenantId:
+      name: tenantId
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Tenant id.
+  requestBodies:
+    BetaBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Beta'
+  responses:
+    BetaCreated:
+      description: created
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Beta'
+  schemas:
+    Beta:
+      type: object
+      properties:
+        id:
+          type: string
