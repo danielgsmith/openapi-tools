@@ -42,8 +42,21 @@ jobs:
       - name: Pack
         run: dotnet pack src/OpenApiTools/OpenApiTools.csproj --configuration Release --no-build --output artifacts
 
+      - name: Create smoke-test NuGet config
+        run: |
+          cat > smoke-test.nuget.config <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="local" value="./artifacts" />
+              <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+            </packageSources>
+          </configuration>
+          EOF
+
       - name: Install tool from package
-        run: dotnet tool install --tool-path ./.tools DanielGSmith.OpenApiTools --add-source ./artifacts
+        run: dotnet tool install --tool-path ./.tools DanielGSmith.OpenApiTools --configfile ./smoke-test.nuget.config
 
       - name: Smoke test tool help
         run: ./.tools/openapi-tool --help
