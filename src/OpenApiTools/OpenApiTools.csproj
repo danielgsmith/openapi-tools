@@ -11,8 +11,8 @@
     <Authors>Daniel Smith</Authors>
     <Description>A dotnet global tool for discovering, validating, diffing, merging, and transforming OpenAPI JSON and YAML documents.</Description>
     <Copyright>Copyright (c) 2026 Daniel Smith</Copyright>
-    <RepositoryUrl>https://github.com/danielsmith/openapi-tools</RepositoryUrl>
-    <PackageProjectUrl>https://github.com/danielsmith/openapi-tools</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/danielgsmith/openapi-tools</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/danielgsmith/openapi-tools</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryType>git</RepositoryType>

@@ -7,7 +7,7 @@ A `dotnet` global tool for discovering, validating, diffing, merging, and transf
 ```bash
 # From GitHub Packages
 # Authenticate to the feed first if you have not already added it locally.
-dotnet tool install --global OpenApiTools --add-source https://nuget.pkg.github.com/danielsmith/index.json
+dotnet tool install --global OpenApiTools --add-source https://nuget.pkg.github.com/danielgsmith/index.json
 ```
 
 Package id: `OpenApiTools`

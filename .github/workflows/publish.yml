@@ -38,7 +38,7 @@ jobs:
         run: dotnet test --configuration Release --no-build --verbosity normal
 
       - name: Pack
-        run: dotnet pack src/OpenApiTools/OpenApiTools.csproj --configuration Release --no-build --include-symbols --output artifacts
+        run: dotnet pack src/OpenApiTools/OpenApiTools.csproj --configuration Release --no-build --output artifacts
 
       - name: Install tool from package
         run: dotnet tool install --tool-path ./.tools OpenApiTools --add-source ./artifacts
@@ -53,5 +53,5 @@ jobs:
         run: |
           dotnet nuget push "artifacts/*.nupkg" \
             --api-key "${{ secrets.GITHUB_TOKEN }}" \
-            --source "https://nuget.pkg.github.com/danielsmith/index.json" \
+            --source "https://nuget.pkg.github.com/danielgsmith/index.json" \
             --skip-duplicate
