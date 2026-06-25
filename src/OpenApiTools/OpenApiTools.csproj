@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>openapi-tool</ToolCommandName>
-    <PackageId>$(MSBuildProjectName)</PackageId>
+    <PackageId>DanielGSmith.OpenApiTools</PackageId>
     <Authors>Daniel Smith</Authors>
     <Description>A dotnet global tool for discovering, validating, diffing, merging, and transforming OpenAPI JSON and YAML documents.</Description>
     <Copyright>Copyright (c) 2026 Daniel Smith</Copyright>

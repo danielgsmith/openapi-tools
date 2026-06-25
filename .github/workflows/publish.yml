@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
       packages: write
 
     steps:
@@ -41,7 +42,7 @@ jobs:
         run: dotnet pack src/OpenApiTools/OpenApiTools.csproj --configuration Release --no-build --output artifacts
 
       - name: Install tool from package
-        run: dotnet tool install --tool-path ./.tools OpenApiTools --add-source ./artifacts
+        run: dotnet tool install --tool-path ./.tools DanielGSmith.OpenApiTools --add-source ./artifacts
 
       - name: Smoke test tool help
         run: ./.tools/openapi-tool --help
@@ -54,4 +55,17 @@ jobs:
           dotnet nuget push "artifacts/*.nupkg" \
             --api-key "${{ secrets.GITHUB_TOKEN }}" \
             --source "https://nuget.pkg.github.com/danielgsmith/index.json" \
+            --skip-duplicate
+
+      - name: NuGet.org login via trusted publishing
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push to NuGet.org
+        run: |
+          dotnet nuget push "artifacts/*.nupkg" \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
+            --source "https://api.nuget.org/v3/index.json" \
             --skip-duplicate

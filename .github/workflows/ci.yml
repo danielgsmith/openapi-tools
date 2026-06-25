@@ -40,10 +40,10 @@ jobs:
         run: dotnet test --configuration Release --no-build --verbosity normal
 
       - name: Pack
-        run: dotnet pack src/OpenApiTools/OpenApiTools.csproj --configuration Release --no-build --include-symbols --output artifacts
+        run: dotnet pack src/OpenApiTools/OpenApiTools.csproj --configuration Release --no-build --output artifacts
 
       - name: Install tool from package
-        run: dotnet tool install --tool-path ./.tools OpenApiTools --add-source ./artifacts
+        run: dotnet tool install --tool-path ./.tools DanielGSmith.OpenApiTools --add-source ./artifacts
 
       - name: Smoke test tool help
         run: ./.tools/openapi-tool --help

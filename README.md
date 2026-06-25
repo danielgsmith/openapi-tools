@@ -7,10 +7,10 @@ A `dotnet` global tool for discovering, validating, diffing, merging, and transf
 ```bash
 # From GitHub Packages
 # Authenticate to the feed first if you have not already added it locally.
-dotnet tool install --global OpenApiTools --add-source https://nuget.pkg.github.com/danielgsmith/index.json
+dotnet tool install --global DanielGSmith.OpenApiTools --add-source https://nuget.pkg.github.com/danielgsmith/index.json
 ```
 
-Package id: `OpenApiTools`
+Package id: `DanielGSmith.OpenApiTools`
 
 Installed command: `openapi-tool`
 
@@ -59,7 +59,7 @@ CI validates packaging by installing the packed tool and smoke testing it:
 
 ```bash
 dotnet pack src/OpenApiTools/OpenApiTools.csproj -c Release -o artifacts
-dotnet tool install --tool-path ./.tools OpenApiTools --add-source ./artifacts
+dotnet tool install --tool-path ./.tools DanielGSmith.OpenApiTools --add-source ./artifacts
 ./.tools/openapi-tool --help
 ./.tools/openapi-tool merge --help
 ```

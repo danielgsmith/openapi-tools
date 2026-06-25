@@ -25,7 +25,7 @@ A `dotnet` global tool for managing and interacting with OpenAPI (Swagger) JSON 
 ## Installation
 
 ```bash
-dotnet tool install --global OpenApiTools --add-source https://nuget.pkg.github.com/danielgsmith/index.json
+dotnet tool install --global DanielGSmith.OpenApiTools --add-source https://nuget.pkg.github.com/danielgsmith/index.json
 ```
 
 ## Output Formats
