@@ -21,13 +21,13 @@ public class MergerEdgeCaseTests
         var config = new MergeConfiguration
         {
             Info = new MergeInfoConfiguration("Merged", "1.0.0"),
-            SchemaConflict = SchemaConflictStrategy.Rename,
             Sources =
             [
                 new SourceConfiguration("merge-ref-a.yaml", Name: "A"),
                 new SourceConfiguration("merge-ref-b.yaml", Name: "B"),
             ],
         };
+        config.Conflicts.Schemas = config.Conflicts.Schemas with { Conflict = MergeConflictResolution.RenameIncoming };
 
         var result = merger.Merge(config, [(config.Sources[0], a), (config.Sources[1], b)]);
 
@@ -40,6 +40,65 @@ public class MergerEdgeCaseTests
         Assert.NotNull(schemaA.Reference);
         Assert.NotNull(schemaB.Reference);
         Assert.Equal("ResponseEnvelope", schemaA.Reference!.Id);
+        Assert.Equal("B_ResponseEnvelope", schemaB.Reference!.Id);
+    }
+
+    [Fact]
+    public async Task Merge_RenameExisting_Should_Rewrite_Existing_Response_Schema_Refs()
+    {
+        var a = await LoadAsync("merge-ref-a.yaml");
+        var b = await LoadAsync("merge-ref-b.yaml");
+        var merger = new OpenApiMerger();
+        var config = new MergeConfiguration
+        {
+            Info = new MergeInfoConfiguration("Merged", "1.0.0"),
+            Sources =
+            [
+                new SourceConfiguration("merge-ref-a.yaml", Name: "A"),
+                new SourceConfiguration("merge-ref-b.yaml", Name: "B"),
+            ],
+        };
+        config.Conflicts.Schemas = config.Conflicts.Schemas with { Conflict = MergeConflictResolution.RenameExisting };
+
+        var result = merger.Merge(config, [(config.Sources[0], a), (config.Sources[1], b)]);
+
+        Assert.Contains("A_ResponseEnvelope", result.Document.Components!.Schemas!.Keys);
+        Assert.Contains("ResponseEnvelope", result.Document.Components.Schemas.Keys);
+
+        var schemaA = result.Document.Paths["/a/items"].Operations[OperationType.Get].Responses["200"].Content["application/json"].Schema;
+        var schemaB = result.Document.Paths["/b/items"].Operations[OperationType.Get].Responses["200"].Content["application/json"].Schema;
+
+        Assert.Equal("A_ResponseEnvelope", schemaA.Reference!.Id);
+        Assert.Equal("ResponseEnvelope", schemaB.Reference!.Id);
+    }
+
+    [Fact]
+    public async Task Merge_RenameBoth_Should_Rewrite_Both_Response_Schema_Refs()
+    {
+        var a = await LoadAsync("merge-ref-a.yaml");
+        var b = await LoadAsync("merge-ref-b.yaml");
+        var merger = new OpenApiMerger();
+        var config = new MergeConfiguration
+        {
+            Info = new MergeInfoConfiguration("Merged", "1.0.0"),
+            Sources =
+            [
+                new SourceConfiguration("merge-ref-a.yaml", Name: "A"),
+                new SourceConfiguration("merge-ref-b.yaml", Name: "B"),
+            ],
+        };
+        config.Conflicts.Schemas = config.Conflicts.Schemas with { Conflict = MergeConflictResolution.RenameBoth };
+
+        var result = merger.Merge(config, [(config.Sources[0], a), (config.Sources[1], b)]);
+
+        Assert.Contains("A_ResponseEnvelope", result.Document.Components!.Schemas!.Keys);
+        Assert.Contains("B_ResponseEnvelope", result.Document.Components.Schemas.Keys);
+        Assert.DoesNotContain("ResponseEnvelope", result.Document.Components.Schemas.Keys);
+
+        var schemaA = result.Document.Paths["/a/items"].Operations[OperationType.Get].Responses["200"].Content["application/json"].Schema;
+        var schemaB = result.Document.Paths["/b/items"].Operations[OperationType.Get].Responses["200"].Content["application/json"].Schema;
+
+        Assert.Equal("A_ResponseEnvelope", schemaA.Reference!.Id);
         Assert.Equal("B_ResponseEnvelope", schemaB.Reference!.Id);
     }
 
@@ -98,8 +157,58 @@ public class MergerEdgeCaseTests
         var result = merger.Merge(config, [(config.Sources[0], a), (config.Sources[1], b)]);
 
         Assert.Single(result.Document.Paths);
-        Assert.Contains(result.Warnings, w => w.Message.Contains("/shared") && w.Message.Contains("skipping"));
+        Assert.Contains(result.Warnings, w => w.Message.Contains("Get /shared") && w.Message.Contains("skipping"));
         Assert.Equal("getSharedA", result.Document.Paths["/shared"].Operations[OperationType.Get].OperationId);
+    }
+
+    [Fact]
+    public void Merge_Should_Combine_Different_Methods_On_The_Same_Path()
+    {
+        var first = new OpenApiDocument
+        {
+            Paths = new OpenApiPaths
+            {
+                ["/shared"] = new OpenApiPathItem
+                {
+                    Operations = new Dictionary<OperationType, OpenApiOperation>
+                    {
+                        [OperationType.Get] = new() { OperationId = "getShared" },
+                    },
+                },
+            },
+        };
+
+        var second = new OpenApiDocument
+        {
+            Paths = new OpenApiPaths
+            {
+                ["/shared"] = new OpenApiPathItem
+                {
+                    Operations = new Dictionary<OperationType, OpenApiOperation>
+                    {
+                        [OperationType.Post] = new() { OperationId = "postShared" },
+                    },
+                },
+            },
+        };
+
+        var merger = new OpenApiMerger();
+        var config = new MergeConfiguration
+        {
+            Info = new MergeInfoConfiguration("Merged", "1.0.0"),
+            Sources =
+            [
+                new SourceConfiguration("first.yaml", Name: "A"),
+                new SourceConfiguration("second.yaml", Name: "B"),
+            ],
+        };
+
+        var result = merger.Merge(config, [(config.Sources[0], first), (config.Sources[1], second)]);
+
+        Assert.Single(result.Document.Paths);
+        Assert.True(result.Document.Paths["/shared"].Operations.ContainsKey(OperationType.Get));
+        Assert.True(result.Document.Paths["/shared"].Operations.ContainsKey(OperationType.Post));
+        Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("POST /shared") && w.Message.Contains("skipping"));
     }
 
     [Fact]
@@ -153,13 +262,13 @@ public class MergerEdgeCaseTests
         var config = new MergeConfiguration
         {
             Info = new MergeInfoConfiguration("Merged", "1.0.0"),
-            SchemaConflict = SchemaConflictStrategy.Rename,
             Sources =
             [
                 new SourceConfiguration("merge-ref-a.yaml"),
                 new SourceConfiguration("merge-ref-b.yaml"),
             ],
         };
+        config.Conflicts.Schemas = config.Conflicts.Schemas with { Conflict = MergeConflictResolution.RenameIncoming };
 
         var result = merger.Merge(config, [(config.Sources[0], a), (config.Sources[1], b)]);
 

@@ -31,8 +31,12 @@ public sealed class MergeCommand : AsyncCommand<MergeCommand.Settings>
         public string? Version { get; init; }
 
         [CommandOption("--schema-conflict <STRATEGY>")]
-        [Description("Strategy for schema conflicts: rename, first-wins, or fail (default: rename).")]
+        [Description("Schema conflict strategy: keep-existing, keep-incoming, rename-incoming, or fail.")]
         public string? SchemaConflict { get; init; }
+
+        [CommandOption("--schema-identical <STRATEGY>")]
+        [Description("Schema duplicate strategy for identical definitions: dedupe, warn-and-dedupe, or fail.")]
+        public string? SchemaIdentical { get; init; }
 
         [CommandOption("-f|--format <FORMAT>")]
         [Description("Output format: json or yaml (default: json).")]
@@ -88,10 +92,9 @@ public sealed class MergeCommand : AsyncCommand<MergeCommand.Settings>
 
             var result = _merger.Merge(config, sources);
 
-            var errors = result.Warnings.Where(w => w.Message.StartsWith("ERROR", StringComparison.Ordinal)).ToList();
-            if (errors.Count > 0)
+            if (result.Errors.Count > 0)
             {
-                foreach (var err in errors)
+                foreach (var err in result.Errors)
                     AnsiConsole.MarkupLine("[red]ERROR: " + err.Message + "[/]");
                 return 1;
             }
@@ -103,11 +106,7 @@ public sealed class MergeCommand : AsyncCommand<MergeCommand.Settings>
             }
 
             var outputPath = settings.Output ?? config.Output;
-            var format = settings.Format.ToLowerInvariant() switch
-            {
-                "yaml" or "yml" => "yaml",
-                _ => "json",
-            };
+            var format = ParseOutputFormat(settings.Format);
 
             await _serializer.SerializeToFileAsync(result.Document, outputPath, format);
 
@@ -143,29 +142,32 @@ public sealed class MergeCommand : AsyncCommand<MergeCommand.Settings>
         if (string.IsNullOrWhiteSpace(settings.Version))
             throw new InvalidOperationException("--version is required when not using --config.");
 
-        var strategy = ParseConflictStrategy(settings.SchemaConflict);
-
         var config = new MergeConfiguration
         {
             Info = new MergeInfoConfiguration(settings.Title!, settings.Version!),
             Output = settings.Output ?? "merged-openapi.json",
-            SchemaConflict = strategy,
             Sources = settings.Files.Select(f => new SourceConfiguration(
                 Path: f,
                 Name: Path.GetFileNameWithoutExtension(f))).ToList(),
         };
 
+        config.Conflicts.Schemas = new MergeComponentConflictPolicy(
+            MergeConfigurationLoader.ParseDuplicateHandling(settings.SchemaIdentical, config.Conflicts.Schemas.Identical, "--schema-identical"),
+            MergeConfigurationLoader.ParseConflictResolution(settings.SchemaConflict, config.Conflicts.Schemas.Conflict, "--schema-conflict"));
+
         return (config, settings.Files.ToList());
     }
 
-    private static SchemaConflictStrategy ParseConflictStrategy(string? value)
+    private static string ParseOutputFormat(string? format)
     {
-        if (string.IsNullOrWhiteSpace(value)) return SchemaConflictStrategy.Rename;
-        return value.ToLowerInvariant() switch
+        if (string.IsNullOrWhiteSpace(format))
+            return "json";
+
+        return format.ToLowerInvariant() switch
         {
-            "first-wins" or "firstwins" => SchemaConflictStrategy.FirstWins,
-            "fail" => SchemaConflictStrategy.Fail,
-            _ => SchemaConflictStrategy.Rename,
+            "json" => "json",
+            "yaml" or "yml" => "yaml",
+            _ => throw new InvalidOperationException("Invalid value '" + format + "' for --format. Allowed values: json, yaml."),
         };
     }
 }

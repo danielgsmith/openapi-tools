@@ -22,5 +22,18 @@
     }
   ],
   "output": "./merged-platform.json",
-  "schemaConflict": "rename"
+  "conflicts": {
+    "schemas": {
+      "identical": "dedupe",
+      "conflict": "rename-incoming"
+    },
+    "responses": {
+      "identical": "dedupe",
+      "conflict": "keep-existing"
+    },
+    "securitySchemes": {
+      "identical": "warn-and-dedupe",
+      "conflict": "keep-existing"
+    }
+  }
 }

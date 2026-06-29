@@ -2,11 +2,38 @@ using Microsoft.OpenApi.Models;
 
 namespace OpenApiTools.Models;
 
-public enum SchemaConflictStrategy
+public enum MergeDuplicateHandling
 {
-    Rename,
-    FirstWins,
+    Dedupe,
+    WarnAndDedupe,
     Fail,
+}
+
+public enum MergeConflictResolution
+{
+    KeepExisting,
+    KeepIncoming,
+    RenameExisting,
+    RenameIncoming,
+    RenameBoth,
+    Fail,
+}
+
+public sealed record MergeComponentConflictPolicy(
+    MergeDuplicateHandling Identical = MergeDuplicateHandling.Dedupe,
+    MergeConflictResolution Conflict = MergeConflictResolution.KeepExisting);
+
+public sealed class MergeConflictPolicies
+{
+    public MergeComponentConflictPolicy Schemas { get; set; } = new(MergeDuplicateHandling.Dedupe, MergeConflictResolution.RenameIncoming);
+    public MergeComponentConflictPolicy Parameters { get; set; } = new();
+    public MergeComponentConflictPolicy Responses { get; set; } = new();
+    public MergeComponentConflictPolicy RequestBodies { get; set; } = new();
+    public MergeComponentConflictPolicy Headers { get; set; } = new();
+    public MergeComponentConflictPolicy Examples { get; set; } = new();
+    public MergeComponentConflictPolicy Links { get; set; } = new();
+    public MergeComponentConflictPolicy Callbacks { get; set; } = new();
+    public MergeComponentConflictPolicy SecuritySchemes { get; set; } = new();
 }
 
 public sealed record MergeInfoConfiguration(
@@ -30,16 +57,16 @@ public sealed class MergeConfiguration
     public List<MergeServerConfiguration> Servers { get; set; } = new();
     public List<SourceConfiguration> Sources { get; set; } = new();
     public string Output { get; set; } = "merged-openapi.json";
-    public SchemaConflictStrategy SchemaConflict { get; set; } = SchemaConflictStrategy.Rename;
+    public MergeConflictPolicies Conflicts { get; set; } = new();
 }
-
-public sealed record MergeWarning(string Message, string? Source = null);
 
 public sealed class MergeResult
 {
     public required OpenApiDocument Document { get; init; }
-    public required IReadOnlyList<MergeWarning> Warnings { get; init; }
-    public bool Success => !Warnings.Any(w => w.Message.StartsWith("ERROR", StringComparison.Ordinal));
+    public required IReadOnlyList<MergeDiagnostic> Diagnostics { get; init; }
+    public IReadOnlyList<MergeDiagnostic> Warnings => Diagnostics.Where(d => d.Severity == MergeDiagnosticSeverity.Warning).ToList();
+    public IReadOnlyList<MergeDiagnostic> Errors => Diagnostics.Where(d => d.Severity == MergeDiagnosticSeverity.Error).ToList();
+    public bool Success => Errors.Count == 0;
 }
 
 public static class MergeConfigurationLoader
@@ -70,15 +97,7 @@ public static class MergeConfigurationLoader
             Output = root.TryGetProperty("output", out var outputProp)
                 ? outputProp.GetString() ?? "merged-openapi.json"
                 : "merged-openapi.json",
-            SchemaConflict = root.TryGetProperty("schemaConflict", out var schemaConflictElement)
-                && schemaConflictElement.ValueKind == System.Text.Json.JsonValueKind.String
-                ? schemaConflictElement.GetString()?.ToLowerInvariant() switch
-                {
-                    "first-wins" or "firstwins" => SchemaConflictStrategy.FirstWins,
-                    "fail" => SchemaConflictStrategy.Fail,
-                    _ => SchemaConflictStrategy.Rename,
-                }
-                : SchemaConflictStrategy.Rename,
+            Conflicts = LoadConflictPolicies(root),
         };
 
         if (root.TryGetProperty("servers", out var serversElement) && serversElement.ValueKind == System.Text.Json.JsonValueKind.Array)
@@ -112,5 +131,87 @@ public static class MergeConfigurationLoader
             throw new InvalidOperationException("Merge config must contain an info.version.");
 
         return config;
+    }
+
+    private static MergeConflictPolicies LoadConflictPolicies(System.Text.Json.JsonElement root)
+    {
+        var policies = new MergeConflictPolicies();
+
+        if (!root.TryGetProperty("conflicts", out var conflictsElement)
+            || conflictsElement.ValueKind != System.Text.Json.JsonValueKind.Object)
+        {
+            return policies;
+        }
+
+        ApplyPolicy(conflictsElement, "schemas", policy => policies.Schemas = policy, policies.Schemas);
+        ApplyPolicy(conflictsElement, "parameters", policy => policies.Parameters = policy, policies.Parameters);
+        ApplyPolicy(conflictsElement, "responses", policy => policies.Responses = policy, policies.Responses);
+        ApplyPolicy(conflictsElement, "requestBodies", policy => policies.RequestBodies = policy, policies.RequestBodies);
+        ApplyPolicy(conflictsElement, "headers", policy => policies.Headers = policy, policies.Headers);
+        ApplyPolicy(conflictsElement, "examples", policy => policies.Examples = policy, policies.Examples);
+        ApplyPolicy(conflictsElement, "links", policy => policies.Links = policy, policies.Links);
+        ApplyPolicy(conflictsElement, "callbacks", policy => policies.Callbacks = policy, policies.Callbacks);
+        ApplyPolicy(conflictsElement, "securitySchemes", policy => policies.SecuritySchemes = policy, policies.SecuritySchemes);
+
+        return policies;
+    }
+
+    private static void ApplyPolicy(
+        System.Text.Json.JsonElement conflictsElement,
+        string propertyName,
+        Action<MergeComponentConflictPolicy> assign,
+        MergeComponentConflictPolicy fallback)
+    {
+        if (!conflictsElement.TryGetProperty(propertyName, out var policyElement)
+            || policyElement.ValueKind != System.Text.Json.JsonValueKind.Object)
+        {
+            return;
+        }
+
+        var identical = policyElement.TryGetProperty("identical", out var identicalElement)
+            ? ParseDuplicateHandling(identicalElement.GetString(), fallback.Identical, propertyName + ".identical")
+            : fallback.Identical;
+        var conflict = policyElement.TryGetProperty("conflict", out var conflictElement)
+            ? ParseConflictResolution(conflictElement.GetString(), fallback.Conflict, propertyName + ".conflict")
+            : fallback.Conflict;
+
+        assign(new MergeComponentConflictPolicy(identical, conflict));
+    }
+
+    public static MergeDuplicateHandling ParseDuplicateHandling(string? value, MergeDuplicateHandling fallback = MergeDuplicateHandling.Dedupe, string? context = null)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return fallback;
+
+        return value.ToLowerInvariant() switch
+        {
+            "warn-and-dedupe" => MergeDuplicateHandling.WarnAndDedupe,
+            "fail" => MergeDuplicateHandling.Fail,
+            "dedupe" => MergeDuplicateHandling.Dedupe,
+            _ => throw new InvalidOperationException(BuildInvalidValueMessage(value ?? string.Empty, context, "dedupe, warn-and-dedupe, fail")),
+        };
+    }
+
+    public static MergeConflictResolution ParseConflictResolution(string? value, MergeConflictResolution fallback = MergeConflictResolution.KeepExisting, string? context = null)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return fallback;
+
+        return value.ToLowerInvariant() switch
+        {
+            "keep-incoming" => MergeConflictResolution.KeepIncoming,
+            "rename-existing" => MergeConflictResolution.RenameExisting,
+            "rename-incoming" => MergeConflictResolution.RenameIncoming,
+            "rename-both" => MergeConflictResolution.RenameBoth,
+            "fail" => MergeConflictResolution.Fail,
+            "keep-existing" => MergeConflictResolution.KeepExisting,
+            _ => throw new InvalidOperationException(BuildInvalidValueMessage(value ?? string.Empty, context, "keep-existing, keep-incoming, rename-existing, rename-incoming, rename-both, fail")),
+        };
+    }
+
+    private static string BuildInvalidValueMessage(string value, string? context, string allowedValues)
+    {
+        var scope = string.IsNullOrWhiteSpace(context) ? "merge policy" : context;
+        return "Invalid value '" + value + "' for " + scope + ". Allowed values: " + allowedValues + ".";
     }
 }

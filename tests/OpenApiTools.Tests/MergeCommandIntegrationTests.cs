@@ -46,6 +46,13 @@ public class MergeCommandIntegrationTests
         return (process.ExitCode, stdout, stderr);
     }
 
+    private static string WriteTempFile(string extension, string content)
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + extension);
+        File.WriteAllText(path, content);
+        return path;
+    }
+
     [Fact]
     public async Task Merge_DirectMode_Should_Write_Output_File()
     {
@@ -109,6 +116,174 @@ public class MergeCommandIntegrationTests
         }
         finally
         {
+            File.Delete(output);
+        }
+    }
+
+    [Fact]
+    public async Task Merge_Should_Fail_On_Invalid_Schema_Conflict_Value()
+    {
+        var result = await RunToolAsync(
+            "merge",
+            "--title", "Platform API",
+            "--version", "1.0.0",
+            "--schema-conflict", "banana",
+            "samples/users-api.yaml",
+            "samples/products-api.yaml");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("banana", result.StdErr + result.StdOut);
+        Assert.Contains("--schema-conflict", result.StdErr + result.StdOut);
+    }
+
+    [Fact]
+    public async Task Merge_Should_Fail_On_Invalid_Schema_Identical_Value()
+    {
+        var result = await RunToolAsync(
+            "merge",
+            "--title", "Platform API",
+            "--version", "1.0.0",
+            "--schema-identical", "banana",
+            "samples/users-api.yaml",
+            "samples/products-api.yaml");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("banana", result.StdErr + result.StdOut);
+        Assert.Contains("--schema-identical", result.StdErr + result.StdOut);
+    }
+
+    [Fact]
+    public async Task Merge_Should_Fail_On_Invalid_Output_Format()
+    {
+        var result = await RunToolAsync(
+            "merge",
+            "--title", "Platform API",
+            "--version", "1.0.0",
+            "--format", "toml",
+            "samples/users-api.yaml",
+            "samples/products-api.yaml");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("toml", result.StdErr + result.StdOut);
+        Assert.Contains("--format", result.StdErr + result.StdOut);
+    }
+
+    [Fact]
+    public async Task Merge_Should_Combine_Different_Methods_On_Same_Path_EndToEnd()
+    {
+        var first = WriteTempFile(
+            ".yaml",
+            """
+            openapi: 3.0.1
+            info:
+              title: First
+              version: 1.0.0
+            paths:
+              /shared:
+                get:
+                  operationId: getShared
+                  responses:
+                    '200':
+                      description: OK
+            """);
+        var second = WriteTempFile(
+            ".yaml",
+            """
+            openapi: 3.0.1
+            info:
+              title: Second
+              version: 1.0.0
+            paths:
+              /shared:
+                post:
+                  operationId: postShared
+                  responses:
+                    '201':
+                      description: Created
+            """);
+        var output = Path.Combine(Path.GetTempPath(), "merged-path-methods-" + Guid.NewGuid().ToString("N") + ".json");
+
+        try
+        {
+            var result = await RunToolAsync(
+                "merge",
+                "--title", "Platform API",
+                "--version", "1.0.0",
+                "-o", output,
+                first,
+                second);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.True(File.Exists(output));
+
+            var endpoints = await RunToolAsync("endpoints", output, "--format", "plain");
+            Assert.Contains("GET\t/shared\tgetShared", endpoints.StdOut);
+            Assert.Contains("POST\t/shared\tpostShared", endpoints.StdOut);
+        }
+        finally
+        {
+            File.Delete(first);
+            File.Delete(second);
+            File.Delete(output);
+        }
+    }
+
+    [Fact]
+    public async Task Merge_Should_Deduplicate_Identical_Schemas_EndToEnd()
+    {
+        var first = WriteTempFile(
+            ".yaml",
+            """
+            openapi: 3.0.1
+            info:
+              title: First
+              version: 1.0.0
+            components:
+              schemas:
+                Error:
+                  type: object
+                  properties:
+                    message:
+                      type: string
+            paths: {}
+            """);
+        var second = WriteTempFile(
+            ".yaml",
+            """
+            openapi: 3.0.1
+            info:
+              title: Second
+              version: 1.0.0
+            components:
+              schemas:
+                Error:
+                  properties:
+                    message:
+                      type: string
+                  type: object
+            paths: {}
+            """);
+        var output = Path.Combine(Path.GetTempPath(), "merged-identical-schemas-" + Guid.NewGuid().ToString("N") + ".json");
+
+        try
+        {
+            var result = await RunToolAsync(
+                "merge",
+                "--title", "Platform API",
+                "--version", "1.0.0",
+                "-o", output,
+                first,
+                second);
+
+            Assert.Equal(0, result.ExitCode);
+            var content = await File.ReadAllTextAsync(output);
+            Assert.Contains("\"Error\"", content);
+            Assert.DoesNotContain("Second_Error", content);
+        }
+        finally
+        {
+            File.Delete(first);
+            File.Delete(second);
             File.Delete(output);
         }
     }

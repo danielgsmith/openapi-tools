@@ -10,6 +10,20 @@ public interface IOpenApiMerger
 
 public sealed class OpenApiMerger : IOpenApiMerger
 {
+    private readonly IOpenApiComponentComparer _componentComparer;
+    private readonly IOpenApiConflictDetector _conflictDetector;
+
+    public OpenApiMerger()
+        : this(new OpenApiComponentComparer(), new OpenApiConflictDetector())
+    {
+    }
+
+    public OpenApiMerger(IOpenApiComponentComparer componentComparer, IOpenApiConflictDetector conflictDetector)
+    {
+        _componentComparer = componentComparer;
+        _conflictDetector = conflictDetector;
+    }
+
     private sealed class SourceComponentMaps
     {
         private readonly Dictionary<ReferenceType, Dictionary<string, string>> _maps = new();
@@ -45,7 +59,7 @@ public sealed class OpenApiMerger : IOpenApiMerger
         MergeConfiguration config,
         IReadOnlyList<(SourceConfiguration Source, OpenApiDocument Document)> sources)
     {
-        var warnings = new List<MergeWarning>();
+        var diagnostics = new List<MergeDiagnostic>();
         var merged = new OpenApiDocument
         {
             Info = new OpenApiInfo
@@ -77,9 +91,16 @@ public sealed class OpenApiMerger : IOpenApiMerger
         };
 
         var seenOperationIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var seenPaths = new HashSet<string>(StringComparer.Ordinal);
 
         var schemaRegistry = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var parameterOwners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var responseOwners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var requestBodyOwners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var headerOwners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var exampleOwners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var linkOwners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var callbackOwners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var securitySchemeOwners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var (sourceConfig, doc) in sources)
         {
@@ -88,16 +109,16 @@ public sealed class OpenApiMerger : IOpenApiMerger
             var opIdPrefix = sourceConfig.OperationIdPrefix ?? "";
             var maps = new SourceComponentMaps(sourceName);
 
-            MergeSchemas(doc, sourceName, config.SchemaConflict, schemaRegistry, maps, warnings, merged);
-            MergeNamedComponents(doc.Components?.Parameters, merged.Components.Parameters!, ReferenceType.Parameter, "parameter", sourceName, maps, warnings, CloneParameterDefinition);
-            MergeNamedComponents(doc.Components?.Responses, merged.Components.Responses!, ReferenceType.Response, "response", sourceName, maps, warnings, CloneResponseDefinition);
-            MergeNamedComponents(doc.Components?.RequestBodies, merged.Components.RequestBodies!, ReferenceType.RequestBody, "request body", sourceName, maps, warnings, CloneRequestBodyDefinition);
-            MergeNamedComponents(doc.Components?.Headers, merged.Components.Headers!, ReferenceType.Header, "header", sourceName, maps, warnings, CloneHeaderDefinition);
-            MergeNamedComponents(doc.Components?.Examples, merged.Components.Examples!, ReferenceType.Example, "example", sourceName, maps, warnings, CloneExampleDefinition);
-            MergeNamedComponents(doc.Components?.Links, merged.Components.Links!, ReferenceType.Link, "link", sourceName, maps, warnings, CloneLinkDefinition);
-            MergeNamedComponents(doc.Components?.Callbacks, merged.Components.Callbacks!, ReferenceType.Callback, "callback", sourceName, maps, warnings, CloneCallbackDefinition);
-            MergeSecuritySchemes(doc, sourceName, maps, merged, warnings);
-            MergePaths(doc, sourceName, pathPrefix, opIdPrefix, seenPaths, seenOperationIds, merged, warnings, maps);
+            MergeSchemas(doc, sourceName, config.Conflicts.Schemas, schemaRegistry, maps, diagnostics, merged);
+            MergeNamedComponents(doc.Components?.Parameters, merged.Components.Parameters!, parameterOwners, config.Conflicts.Parameters, ReferenceType.Parameter, "parameter", sourceName, maps, diagnostics, merged, CloneParameterDefinition, _componentComparer.AreEquivalent);
+            MergeNamedComponents(doc.Components?.Responses, merged.Components.Responses!, responseOwners, config.Conflicts.Responses, ReferenceType.Response, "response", sourceName, maps, diagnostics, merged, CloneResponseDefinition, _componentComparer.AreEquivalent);
+            MergeNamedComponents(doc.Components?.RequestBodies, merged.Components.RequestBodies!, requestBodyOwners, config.Conflicts.RequestBodies, ReferenceType.RequestBody, "request body", sourceName, maps, diagnostics, merged, CloneRequestBodyDefinition, _componentComparer.AreEquivalent);
+            MergeNamedComponents(doc.Components?.Headers, merged.Components.Headers!, headerOwners, config.Conflicts.Headers, ReferenceType.Header, "header", sourceName, maps, diagnostics, merged, CloneHeaderDefinition, _componentComparer.AreEquivalent);
+            MergeNamedComponents(doc.Components?.Examples, merged.Components.Examples!, exampleOwners, config.Conflicts.Examples, ReferenceType.Example, "example", sourceName, maps, diagnostics, merged, CloneExampleDefinition, _componentComparer.AreEquivalent);
+            MergeNamedComponents(doc.Components?.Links, merged.Components.Links!, linkOwners, config.Conflicts.Links, ReferenceType.Link, "link", sourceName, maps, diagnostics, merged, CloneLinkDefinition, _componentComparer.AreEquivalent);
+            MergeNamedComponents(doc.Components?.Callbacks, merged.Components.Callbacks!, callbackOwners, config.Conflicts.Callbacks, ReferenceType.Callback, "callback", sourceName, maps, diagnostics, merged, CloneCallbackDefinition, _componentComparer.AreEquivalent);
+            MergeSecuritySchemes(doc, sourceName, maps, merged, diagnostics, securitySchemeOwners, config.Conflicts.SecuritySchemes);
+            MergePaths(doc, sourceName, pathPrefix, opIdPrefix, seenOperationIds, merged, diagnostics, maps);
             MergeTags(doc, merged);
             MergeDocumentSecurity(doc, merged, maps);
         }
@@ -105,7 +126,7 @@ public sealed class OpenApiMerger : IOpenApiMerger
         return new MergeResult
         {
             Document = merged,
-            Warnings = warnings,
+            Diagnostics = diagnostics,
         };
     }
 
@@ -116,46 +137,129 @@ public sealed class OpenApiMerger : IOpenApiMerger
         return prefix.TrimEnd('/');
     }
 
-    private static void MergeSchemas(
+    private void MergeSchemas(
         OpenApiDocument doc,
         string sourceName,
-        SchemaConflictStrategy strategy,
+        MergeComponentConflictPolicy policy,
         Dictionary<string, string> registry,
         SourceComponentMaps maps,
-        List<MergeWarning> warnings,
+        List<MergeDiagnostic> diagnostics,
         OpenApiDocument merged)
     {
         if (doc.Components?.Schemas is null) return;
 
         foreach (var (name, schema) in doc.Components.Schemas)
         {
+            var conflict = _conflictDetector.Detect(
+                "schema",
+                name,
+                sourceName,
+                merged.Components.Schemas!,
+                registry,
+                _componentComparer.AreEquivalent,
+                schema);
+
             string finalName;
 
-            if (registry.TryGetValue(name, out var existingOwner))
+            if (conflict.Kind == MergeConflictKind.Unique)
             {
-                switch (strategy)
-                {
-                    case SchemaConflictStrategy.Fail:
-                        warnings.Add(new MergeWarning(
-                            "ERROR: Schema conflict on '" + name + "' from source '" + sourceName +
-                            "' (already defined by '" + existingOwner + "'). Use rename or first-wins strategy.",
-                            sourceName));
-                        continue;
+                finalName = name;
+                registry[name] = sourceName;
+                maps.Register(ReferenceType.Schema, name, name);
+            }
+            else if (conflict.Kind == MergeConflictKind.IdenticalDuplicate)
+            {
+                maps.Register(ReferenceType.Schema, name, name);
 
-                    case SchemaConflictStrategy.FirstWins:
-                        warnings.Add(new MergeWarning(
-                            "Schema '" + name + "' from '" + sourceName + "' ignored (first-wins, already defined by '" + existingOwner + "').",
+                if (policy.Identical == MergeDuplicateHandling.Fail)
+                {
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Error,
+                        "Identical schema '" + name + "' from '" + sourceName + "' duplicates the definition from '" + conflict.ExistingOwner + "'.",
+                        sourceName));
+                }
+                else if (policy.Identical == MergeDuplicateHandling.WarnAndDedupe)
+                {
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
+                        "Identical schema '" + name + "' from '" + sourceName + "' deduplicated against '" + conflict.ExistingOwner + "'.",
+                        sourceName));
+                }
+
+                continue;
+            }
+            else
+            {
+                switch (policy.Conflict)
+                {
+                    case MergeConflictResolution.Fail:
+                        diagnostics.Add(new MergeDiagnostic(
+                            MergeDiagnosticSeverity.Error,
+                            "Schema conflict on '" + name + "' from source '" + sourceName +
+                            "' (already defined by '" + conflict.ExistingOwner + "').",
                             sourceName));
                         maps.Register(ReferenceType.Schema, name, name);
                         continue;
 
-                    case SchemaConflictStrategy.Rename:
-                        finalName = sourceName.Replace(" ", "_").Replace("-", "_") + "_" + name;
-                        finalName = EnsureUniqueSchemaName(finalName, registry);
+                    case MergeConflictResolution.KeepExisting:
+                        diagnostics.Add(new MergeDiagnostic(
+                            MergeDiagnosticSeverity.Warning,
+                            "Schema '" + name + "' from '" + sourceName + "' ignored; keeping existing definition from '" + conflict.ExistingOwner + "'.",
+                            sourceName));
+                        maps.Register(ReferenceType.Schema, name, name);
+                        continue;
+
+                    case MergeConflictResolution.KeepIncoming:
+                        diagnostics.Add(new MergeDiagnostic(
+                            MergeDiagnosticSeverity.Warning,
+                            "Schema '" + name + "' from '" + sourceName + "' replaced the existing definition from '" + conflict.ExistingOwner + "'.",
+                            sourceName));
+                        finalName = name;
+                        registry[name] = sourceName;
+                        maps.Register(ReferenceType.Schema, name, name);
+                        break;
+
+                    case MergeConflictResolution.RenameExisting:
+                        var renamedExistingSchema = RenameExistingComponent(
+                            merged,
+                            merged.Components.Schemas!,
+                            registry,
+                            ReferenceType.Schema,
+                            name,
+                            conflict.ExistingOwner ?? "existing");
+                        diagnostics.Add(new MergeDiagnostic(
+                            MergeDiagnosticSeverity.Warning,
+                            "Existing schema '" + name + "' from '" + conflict.ExistingOwner + "' renamed to '" + renamedExistingSchema + "'; incoming definition from '" + sourceName + "' kept as '" + name + "'.",
+                            sourceName));
+                        finalName = name;
+                        registry[name] = sourceName;
+                        maps.Register(ReferenceType.Schema, name, name);
+                        break;
+
+                    case MergeConflictResolution.RenameIncoming:
+                        finalName = BuildScopedName(sourceName, name, registry);
                         registry[finalName] = sourceName;
                         maps.Register(ReferenceType.Schema, name, finalName);
-                        warnings.Add(new MergeWarning(
+                        diagnostics.Add(new MergeDiagnostic(
+                            MergeDiagnosticSeverity.Warning,
                             "Schema '" + name + "' from '" + sourceName + "' renamed to '" + finalName + "'.",
+                            sourceName));
+                        break;
+
+                    case MergeConflictResolution.RenameBoth:
+                        var renamedExistingSchemaForBoth = RenameExistingComponent(
+                            merged,
+                            merged.Components.Schemas!,
+                            registry,
+                            ReferenceType.Schema,
+                            name,
+                            conflict.ExistingOwner ?? "existing");
+                        finalName = BuildScopedName(sourceName, name, registry);
+                        registry[finalName] = sourceName;
+                        maps.Register(ReferenceType.Schema, name, finalName);
+                        diagnostics.Add(new MergeDiagnostic(
+                            MergeDiagnosticSeverity.Warning,
+                            "Schema '" + name + "' from '" + conflict.ExistingOwner + "' renamed to '" + renamedExistingSchemaForBoth + "', and incoming schema from '" + sourceName + "' renamed to '" + finalName + "'.",
                             sourceName));
                         break;
 
@@ -164,47 +268,130 @@ public sealed class OpenApiMerger : IOpenApiMerger
                         break;
                 }
             }
-            else
-            {
-                finalName = name;
-                registry[name] = sourceName;
-                maps.Register(ReferenceType.Schema, name, name);
-            }
 
             merged.Components.Schemas![finalName] = CloneSchemaDefinition(schema, maps, name);
         }
     }
 
-    private static void MergeNamedComponents<T>(
+    private void MergeNamedComponents<T>(
         IDictionary<string, T>? source,
         IDictionary<string, T> target,
+        IDictionary<string, string> owners,
+        MergeComponentConflictPolicy policy,
         ReferenceType referenceType,
         string label,
         string sourceName,
         SourceComponentMaps maps,
-        List<MergeWarning> warnings,
-        Func<T, SourceComponentMaps, string, T> cloneDefinition)
+        List<MergeDiagnostic> diagnostics,
+        OpenApiDocument merged,
+        Func<T, SourceComponentMaps, string, T> cloneDefinition,
+        Func<T, T, bool> areEquivalent)
         where T : class
     {
         if (source is null) return;
 
         foreach (var (name, component) in source)
         {
-            maps.Register(referenceType, name, name);
+            var conflict = _conflictDetector.Detect(label, name, sourceName, target, owners, areEquivalent, component);
 
-            if (target.ContainsKey(name))
+            if (conflict.Kind == MergeConflictKind.Unique)
             {
-                warnings.Add(new MergeWarning(
-                    "Duplicate " + label + " '" + name + "' from '" + sourceName + "'; keeping first definition.",
-                    sourceName));
+                maps.Register(referenceType, name, name);
+                owners[name] = sourceName;
+                target[name] = cloneDefinition(component, maps, name);
                 continue;
             }
 
-            target[name] = cloneDefinition(component, maps, name);
+            maps.Register(referenceType, name, name);
+
+            if (conflict.Kind == MergeConflictKind.IdenticalDuplicate)
+            {
+                if (policy.Identical == MergeDuplicateHandling.Fail)
+                {
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Error,
+                        "Identical " + label + " '" + name + "' from '" + sourceName + "' duplicates the definition from '" + conflict.ExistingOwner + "'.",
+                        sourceName));
+                }
+                else if (policy.Identical == MergeDuplicateHandling.WarnAndDedupe)
+                {
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
+                        "Identical " + label + " '" + name + "' from '" + sourceName + "' deduplicated against '" + conflict.ExistingOwner + "'.",
+                        sourceName));
+                }
+
+                continue;
+            }
+
+            switch (policy.Conflict)
+            {
+                case MergeConflictResolution.Fail:
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Error,
+                        "Conflicting " + label + " '" + name + "' from '" + sourceName + "' already exists from '" + conflict.ExistingOwner + "'.",
+                        sourceName));
+                    break;
+
+                case MergeConflictResolution.KeepExisting:
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
+                        "Conflicting " + label + " '" + name + "' from '" + sourceName + "'; keeping existing definition from '" + conflict.ExistingOwner + "'.",
+                        sourceName));
+                    break;
+
+                case MergeConflictResolution.KeepIncoming:
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
+                        "Conflicting " + label + " '" + name + "' from '" + sourceName + "' replaced the existing definition from '" + conflict.ExistingOwner + "'.",
+                        sourceName));
+                    owners[name] = sourceName;
+                    target[name] = cloneDefinition(component, maps, name);
+                    break;
+
+                case MergeConflictResolution.RenameExisting:
+                    var renamedExisting = RenameExistingComponent(merged, target, owners, referenceType, name, conflict.ExistingOwner ?? "existing");
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
+                        "Existing " + label + " '" + name + "' from '" + conflict.ExistingOwner + "' renamed to '" + renamedExisting + "'; incoming definition from '" + sourceName + "' kept as '" + name + "'.",
+                        sourceName));
+                    owners[name] = sourceName;
+                    target[name] = cloneDefinition(component, maps, name);
+                    break;
+
+                case MergeConflictResolution.RenameIncoming:
+                    var finalName = BuildScopedName(sourceName, name, owners);
+                    maps.Register(referenceType, name, finalName);
+                    owners[finalName] = sourceName;
+                    target[finalName] = cloneDefinition(component, maps, name);
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
+                        "Conflicting " + label + " '" + name + "' from '" + sourceName + "' renamed to '" + finalName + "'.",
+                        sourceName));
+                    break;
+
+                case MergeConflictResolution.RenameBoth:
+                    var renamedExistingForBoth = RenameExistingComponent(merged, target, owners, referenceType, name, conflict.ExistingOwner ?? "existing");
+                    var renamedIncomingForBoth = BuildScopedName(sourceName, name, owners);
+                    maps.Register(referenceType, name, renamedIncomingForBoth);
+                    owners[renamedIncomingForBoth] = sourceName;
+                    target[renamedIncomingForBoth] = cloneDefinition(component, maps, name);
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
+                        "Existing " + label + " '" + name + "' from '" + conflict.ExistingOwner + "' renamed to '" + renamedExistingForBoth + "', and incoming definition from '" + sourceName + "' renamed to '" + renamedIncomingForBoth + "'.",
+                        sourceName));
+                    break;
+            }
         }
     }
 
-    private static string EnsureUniqueSchemaName(string name, Dictionary<string, string> registry)
+    private static string BuildScopedName(string sourceName, string name, IDictionary<string, string> registry)
+    {
+        var scopedName = sourceName.Replace(" ", "_").Replace("-", "_") + "_" + name;
+        return EnsureUniqueName(scopedName, registry);
+    }
+
+    private static string EnsureUniqueName(string name, IDictionary<string, string> registry)
     {
         if (!registry.ContainsKey(name)) return name;
         var i = 1;
@@ -212,27 +399,407 @@ public sealed class OpenApiMerger : IOpenApiMerger
         return name + "_" + i;
     }
 
-    private static void MergeSecuritySchemes(
+    private static string RenameExistingComponent<T>(
+        OpenApiDocument merged,
+        IDictionary<string, T> target,
+        IDictionary<string, string> owners,
+        ReferenceType referenceType,
+        string currentName,
+        string ownerName)
+        where T : class
+    {
+        var renamedName = BuildScopedName(ownerName, currentName, owners);
+        target[renamedName] = target[currentName];
+        target.Remove(currentName);
+
+        owners.Remove(currentName);
+        owners[renamedName] = ownerName;
+
+        RewriteReferencesInDocument(merged, referenceType, currentName, renamedName);
+        return renamedName;
+    }
+
+    private static void RewriteReferencesInDocument(OpenApiDocument document, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        foreach (var pathItem in document.Paths.Values)
+            RewritePathItemReferences(pathItem, referenceType, currentName, renamedName);
+
+        var components = document.Components;
+        if (components is null)
+            return;
+
+        RewriteSchemaCollection(components.Schemas, referenceType, currentName, renamedName);
+        RewriteParameterCollection(components.Parameters, referenceType, currentName, renamedName);
+        RewriteResponseCollection(components.Responses, referenceType, currentName, renamedName);
+        RewriteRequestBodyCollection(components.RequestBodies, referenceType, currentName, renamedName);
+        RewriteHeaderCollection(components.Headers, referenceType, currentName, renamedName);
+        RewriteExampleCollection(components.Examples, referenceType, currentName, renamedName);
+        RewriteLinkCollection(components.Links, referenceType, currentName, renamedName);
+        RewriteCallbackCollection(components.Callbacks, referenceType, currentName, renamedName);
+        RewriteSecurityRequirementList(document.SecurityRequirements, referenceType, currentName, renamedName);
+    }
+
+    private static void RewritePathItemReferences(OpenApiPathItem pathItem, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        if (pathItem.Parameters is not null)
+        {
+            foreach (var parameter in pathItem.Parameters)
+                RewriteParameterReferences(parameter, referenceType, currentName, renamedName);
+        }
+
+        foreach (var operation in pathItem.Operations.Values)
+            RewriteOperationReferences(operation, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteOperationReferences(OpenApiOperation operation, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        if (operation.Parameters is not null)
+        {
+            foreach (var parameter in operation.Parameters)
+                RewriteParameterReferences(parameter, referenceType, currentName, renamedName);
+        }
+
+        if (operation.RequestBody is not null)
+            RewriteRequestBodyReferences(operation.RequestBody, referenceType, currentName, renamedName);
+
+        foreach (var response in operation.Responses.Values)
+            RewriteResponseReferences(response, referenceType, currentName, renamedName);
+
+        RewriteSecurityRequirementList(operation.Security, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteSchemaCollection(IDictionary<string, OpenApiSchema>? collection, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        if (collection is null) return;
+        foreach (var schema in collection.Values)
+            RewriteSchemaReferences(schema, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteParameterCollection(IDictionary<string, OpenApiParameter>? collection, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        if (collection is null) return;
+        foreach (var parameter in collection.Values)
+            RewriteParameterReferences(parameter, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteResponseCollection(IDictionary<string, OpenApiResponse>? collection, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        if (collection is null) return;
+        foreach (var response in collection.Values)
+            RewriteResponseReferences(response, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteRequestBodyCollection(IDictionary<string, OpenApiRequestBody>? collection, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        if (collection is null) return;
+        foreach (var requestBody in collection.Values)
+            RewriteRequestBodyReferences(requestBody, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteHeaderCollection(IDictionary<string, OpenApiHeader>? collection, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        if (collection is null) return;
+        foreach (var header in collection.Values)
+            RewriteHeaderReferences(header, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteExampleCollection(IDictionary<string, OpenApiExample>? collection, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        if (collection is null) return;
+        foreach (var example in collection.Values)
+            RewriteExampleReferences(example, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteLinkCollection(IDictionary<string, OpenApiLink>? collection, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        if (collection is null) return;
+        foreach (var link in collection.Values)
+            RewriteLinkReferences(link, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteCallbackCollection(IDictionary<string, OpenApiCallback>? collection, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        if (collection is null) return;
+        foreach (var callback in collection.Values)
+            RewriteCallbackReferences(callback, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteSchemaReferences(OpenApiSchema schema, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        RewriteReference(schema.Reference, referenceType, currentName, renamedName);
+        RewriteSchemaList(schema.AllOf, referenceType, currentName, renamedName);
+        RewriteSchemaList(schema.OneOf, referenceType, currentName, renamedName);
+        RewriteSchemaList(schema.AnyOf, referenceType, currentName, renamedName);
+        if (schema.Not is not null) RewriteSchemaReferences(schema.Not, referenceType, currentName, renamedName);
+        if (schema.Items is not null) RewriteSchemaReferences(schema.Items, referenceType, currentName, renamedName);
+        if (schema.Properties is not null)
+        {
+            foreach (var property in schema.Properties.Values)
+                RewriteSchemaReferences(property, referenceType, currentName, renamedName);
+        }
+        if (schema.AdditionalProperties is not null)
+            RewriteSchemaReferences(schema.AdditionalProperties, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteSchemaList(IList<OpenApiSchema>? schemas, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        if (schemas is null) return;
+        foreach (var schema in schemas)
+            RewriteSchemaReferences(schema, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteParameterReferences(OpenApiParameter parameter, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        RewriteReference(parameter.Reference, referenceType, currentName, renamedName);
+        if (parameter.Schema is not null) RewriteSchemaReferences(parameter.Schema, referenceType, currentName, renamedName);
+        if (parameter.Examples is not null)
+        {
+            foreach (var example in parameter.Examples.Values)
+                RewriteExampleReferences(example, referenceType, currentName, renamedName);
+        }
+        if (parameter.Content is not null)
+        {
+            foreach (var mediaType in parameter.Content.Values)
+                RewriteMediaTypeReferences(mediaType, referenceType, currentName, renamedName);
+        }
+    }
+
+    private static void RewriteRequestBodyReferences(OpenApiRequestBody requestBody, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        RewriteReference(requestBody.Reference, referenceType, currentName, renamedName);
+        if (requestBody.Content is null) return;
+        foreach (var mediaType in requestBody.Content.Values)
+            RewriteMediaTypeReferences(mediaType, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteResponseReferences(OpenApiResponse response, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        RewriteReference(response.Reference, referenceType, currentName, renamedName);
+        if (response.Headers is not null)
+        {
+            foreach (var header in response.Headers.Values)
+                RewriteHeaderReferences(header, referenceType, currentName, renamedName);
+        }
+        if (response.Content is not null)
+        {
+            foreach (var mediaType in response.Content.Values)
+                RewriteMediaTypeReferences(mediaType, referenceType, currentName, renamedName);
+        }
+        if (response.Links is not null)
+        {
+            foreach (var link in response.Links.Values)
+                RewriteLinkReferences(link, referenceType, currentName, renamedName);
+        }
+    }
+
+    private static void RewriteHeaderReferences(OpenApiHeader header, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        RewriteReference(header.Reference, referenceType, currentName, renamedName);
+        if (header.Schema is not null) RewriteSchemaReferences(header.Schema, referenceType, currentName, renamedName);
+        if (header.Examples is not null)
+        {
+            foreach (var example in header.Examples.Values)
+                RewriteExampleReferences(example, referenceType, currentName, renamedName);
+        }
+        if (header.Content is not null)
+        {
+            foreach (var mediaType in header.Content.Values)
+                RewriteMediaTypeReferences(mediaType, referenceType, currentName, renamedName);
+        }
+    }
+
+    private static void RewriteExampleReferences(OpenApiExample example, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        RewriteReference(example.Reference, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteLinkReferences(OpenApiLink link, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        RewriteReference(link.Reference, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteCallbackReferences(OpenApiCallback callback, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        RewriteReference(callback.Reference, referenceType, currentName, renamedName);
+        foreach (var pathItem in callback.PathItems.Values)
+            RewritePathItemReferences(pathItem, referenceType, currentName, renamedName);
+    }
+
+    private static void RewriteMediaTypeReferences(OpenApiMediaType mediaType, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        if (mediaType.Schema is not null) RewriteSchemaReferences(mediaType.Schema, referenceType, currentName, renamedName);
+        if (mediaType.Examples is not null)
+        {
+            foreach (var example in mediaType.Examples.Values)
+                RewriteExampleReferences(example, referenceType, currentName, renamedName);
+        }
+        if (mediaType.Encoding is not null)
+        {
+            foreach (var encoding in mediaType.Encoding.Values)
+            {
+                if (encoding.Headers is null) continue;
+                foreach (var header in encoding.Headers.Values)
+                    RewriteHeaderReferences(header, referenceType, currentName, renamedName);
+            }
+        }
+    }
+
+    private static void RewriteSecurityRequirementList(IList<OpenApiSecurityRequirement>? requirements, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        if (requirements is null) return;
+        foreach (var requirement in requirements)
+        {
+            var renamedEntries = requirement
+                .Where(pair => pair.Key.Reference?.Type == referenceType && string.Equals(pair.Key.Reference.Id, currentName, StringComparison.OrdinalIgnoreCase))
+                .Select(pair => (Scheme: pair.Key, Scopes: pair.Value))
+                .ToList();
+
+            foreach (var (scheme, scopes) in renamedEntries)
+            {
+                requirement.Remove(scheme);
+                var replacement = new OpenApiSecurityScheme
+                {
+                    Reference = new OpenApiReference
+                    {
+                        Id = renamedName,
+                        Type = referenceType,
+                        ExternalResource = scheme.Reference?.ExternalResource,
+                    },
+                    UnresolvedReference = true,
+                };
+                requirement[replacement] = scopes;
+            }
+        }
+    }
+
+    private static void RewriteReference(OpenApiReference? reference, ReferenceType referenceType, string currentName, string renamedName)
+    {
+        if (reference?.Type == referenceType && string.Equals(reference.Id, currentName, StringComparison.OrdinalIgnoreCase))
+            reference.Id = renamedName;
+    }
+
+    private void MergeSecuritySchemes(
         OpenApiDocument doc,
         string sourceName,
         SourceComponentMaps maps,
         OpenApiDocument merged,
-        List<MergeWarning> warnings)
+        List<MergeDiagnostic> diagnostics,
+        IDictionary<string, string> owners,
+        MergeComponentConflictPolicy policy)
     {
         if (doc.Components?.SecuritySchemes is null) return;
 
         foreach (var (name, scheme) in doc.Components.SecuritySchemes)
         {
-            maps.Register(ReferenceType.SecurityScheme, name, name);
+            var conflict = _conflictDetector.Detect(
+                "security scheme",
+                name,
+                sourceName,
+                merged.Components.SecuritySchemes!,
+                owners,
+                _componentComparer.AreEquivalent,
+                scheme);
 
-            if (merged.Components.SecuritySchemes!.ContainsKey(name))
+            if (conflict.Kind == MergeConflictKind.Unique)
             {
-                warnings.Add(new MergeWarning(
-                    "Security scheme '" + name + "' from '" + sourceName + "' already exists; keeping first definition.",
-                    sourceName));
+                maps.Register(ReferenceType.SecurityScheme, name, name);
+                owners[name] = sourceName;
+                merged.Components.SecuritySchemes![name] = CloneSecuritySchemeDefinition(scheme, maps, name);
                 continue;
             }
-            merged.Components.SecuritySchemes[name] = CloneSecuritySchemeDefinition(scheme, maps, name);
+
+            maps.Register(ReferenceType.SecurityScheme, name, name);
+
+            if (conflict.Kind == MergeConflictKind.IdenticalDuplicate)
+            {
+                if (policy.Identical == MergeDuplicateHandling.Fail)
+                {
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Error,
+                        "Identical security scheme '" + name + "' from '" + sourceName + "' duplicates the definition from '" + conflict.ExistingOwner + "'.",
+                        sourceName));
+                }
+                else if (policy.Identical == MergeDuplicateHandling.WarnAndDedupe)
+                {
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
+                        "Identical security scheme '" + name + "' from '" + sourceName + "' deduplicated against '" + conflict.ExistingOwner + "'.",
+                        sourceName));
+                }
+
+                continue;
+            }
+
+            switch (policy.Conflict)
+            {
+                case MergeConflictResolution.Fail:
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Error,
+                        "Conflicting security scheme '" + name + "' from '" + sourceName + "' already exists from '" + conflict.ExistingOwner + "'.",
+                        sourceName));
+                    break;
+
+                case MergeConflictResolution.KeepExisting:
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
+                        "Conflicting security scheme '" + name + "' from '" + sourceName + "'; keeping existing definition from '" + conflict.ExistingOwner + "'.",
+                        sourceName));
+                    break;
+
+                case MergeConflictResolution.KeepIncoming:
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
+                        "Conflicting security scheme '" + name + "' from '" + sourceName + "' replaced the existing definition from '" + conflict.ExistingOwner + "'.",
+                        sourceName));
+                    owners[name] = sourceName;
+                    merged.Components.SecuritySchemes![name] = CloneSecuritySchemeDefinition(scheme, maps, name);
+                    break;
+
+                case MergeConflictResolution.RenameExisting:
+                    var renamedExistingScheme = RenameExistingComponent(
+                        merged,
+                        merged.Components.SecuritySchemes!,
+                        owners,
+                        ReferenceType.SecurityScheme,
+                        name,
+                        conflict.ExistingOwner ?? "existing");
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
+                        "Existing security scheme '" + name + "' from '" + conflict.ExistingOwner + "' renamed to '" + renamedExistingScheme + "'; incoming definition from '" + sourceName + "' kept as '" + name + "'.",
+                        sourceName));
+                    owners[name] = sourceName;
+                    merged.Components.SecuritySchemes![name] = CloneSecuritySchemeDefinition(scheme, maps, name);
+                    break;
+
+                case MergeConflictResolution.RenameIncoming:
+                    var finalName = BuildScopedName(sourceName, name, owners);
+                    maps.Register(ReferenceType.SecurityScheme, name, finalName);
+                    owners[finalName] = sourceName;
+                    merged.Components.SecuritySchemes![finalName] = CloneSecuritySchemeDefinition(scheme, maps, name);
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
+                        "Conflicting security scheme '" + name + "' from '" + sourceName + "' renamed to '" + finalName + "'.",
+                        sourceName));
+                    break;
+
+                case MergeConflictResolution.RenameBoth:
+                    var renamedExistingSchemeForBoth = RenameExistingComponent(
+                        merged,
+                        merged.Components.SecuritySchemes!,
+                        owners,
+                        ReferenceType.SecurityScheme,
+                        name,
+                        conflict.ExistingOwner ?? "existing");
+                    var renamedIncomingSchemeForBoth = BuildScopedName(sourceName, name, owners);
+                    maps.Register(ReferenceType.SecurityScheme, name, renamedIncomingSchemeForBoth);
+                    owners[renamedIncomingSchemeForBoth] = sourceName;
+                    merged.Components.SecuritySchemes![renamedIncomingSchemeForBoth] = CloneSecuritySchemeDefinition(scheme, maps, name);
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
+                        "Existing security scheme '" + name + "' from '" + conflict.ExistingOwner + "' renamed to '" + renamedExistingSchemeForBoth + "', and incoming definition from '" + sourceName + "' renamed to '" + renamedIncomingSchemeForBoth + "'.",
+                        sourceName));
+                    break;
+            }
         }
     }
 
@@ -241,10 +808,9 @@ public sealed class OpenApiMerger : IOpenApiMerger
         string sourceName,
         string pathPrefix,
         string opIdPrefix,
-        HashSet<string> seenPaths,
         HashSet<string> seenOperationIds,
         OpenApiDocument merged,
-        List<MergeWarning> warnings,
+        List<MergeDiagnostic> diagnostics,
         SourceComponentMaps maps)
     {
         if (doc.Paths is null) return;
@@ -253,38 +819,41 @@ public sealed class OpenApiMerger : IOpenApiMerger
         {
             var newPath = pathPrefix + path;
 
-            if (seenPaths.Contains(newPath))
+            if (!merged.Paths.TryGetValue(newPath, out var newItem))
             {
-                warnings.Add(new MergeWarning(
-                    "Path '" + newPath + "' from '" + sourceName + "' already exists; skipping.",
-                    sourceName));
-                continue;
+                newItem = new OpenApiPathItem
+                {
+                    Summary = item.Summary,
+                    Description = item.Description,
+                    Servers = item.Servers?.Select(CloneServer).ToList(),
+                    Parameters = item.Parameters?.Select(p => CloneParameterReferenceOrInline(p, maps)).ToList(),
+                };
+                merged.Paths[newPath] = newItem;
             }
-            seenPaths.Add(newPath);
-
-            var newItem = new OpenApiPathItem
-            {
-                Summary = item.Summary,
-                Description = item.Description,
-                Servers = item.Servers?.Select(CloneServer).ToList(),
-                Parameters = item.Parameters?.Select(p => CloneParameterReferenceOrInline(p, maps)).ToList(),
-            };
 
             foreach (var (method, op) in item.Operations)
             {
+                if (newItem.Operations.ContainsKey(method))
+                {
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
+                        "Operation '" + method + " " + newPath + "' from '" + sourceName + "' already exists; skipping.",
+                        sourceName));
+                    continue;
+                }
+
                 var newOp = CloneOperation(op, opIdPrefix, maps);
 
                 if (!string.IsNullOrEmpty(newOp.OperationId) && !seenOperationIds.Add(newOp.OperationId))
                 {
-                    warnings.Add(new MergeWarning(
+                    diagnostics.Add(new MergeDiagnostic(
+                        MergeDiagnosticSeverity.Warning,
                         "Duplicate operationId '" + newOp.OperationId + "' from '" + sourceName + "'.",
                         sourceName));
                 }
 
                 newItem.Operations[method] = newOp;
             }
-
-            merged.Paths[newPath] = newItem;
         }
     }
 
@@ -292,23 +861,29 @@ public sealed class OpenApiMerger : IOpenApiMerger
     {
         if (doc.Tags is null) return;
         merged.Tags ??= [];
-        var existing = merged.Tags.Select(t => t.Name ?? "").ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var existing = merged.Tags
+            .Where(t => !string.IsNullOrEmpty(t.Name))
+            .ToDictionary(t => t.Name!, StringComparer.OrdinalIgnoreCase);
 
         foreach (var tag in doc.Tags)
         {
-            if (existing.Add(tag.Name ?? ""))
+            var tagName = tag.Name ?? "";
+            if (string.IsNullOrEmpty(tagName))
+                continue;
+
+            if (!existing.TryGetValue(tagName, out var existingTag))
             {
-                merged.Tags.Add(new OpenApiTag
-                {
-                    Name = tag.Name,
-                    Description = tag.Description,
-                    ExternalDocs = tag.ExternalDocs is null ? null : new OpenApiExternalDocs
-                    {
-                        Url = tag.ExternalDocs.Url,
-                        Description = tag.ExternalDocs.Description,
-                    },
-                });
+                var clonedTag = CloneTag(tag);
+                merged.Tags.Add(clonedTag);
+                existing[tagName] = clonedTag;
+                continue;
             }
+
+            existingTag.Description ??= tag.Description;
+            if (existingTag.ExternalDocs is null && tag.ExternalDocs is not null)
+                existingTag.ExternalDocs = CloneExternalDocs(tag.ExternalDocs);
+            else if (existingTag.ExternalDocs is not null && tag.ExternalDocs is not null)
+                existingTag.ExternalDocs.Description ??= tag.ExternalDocs.Description;
         }
     }
 
@@ -316,9 +891,48 @@ public sealed class OpenApiMerger : IOpenApiMerger
     {
         if (doc.SecurityRequirements is null) return;
         merged.SecurityRequirements ??= [];
+        var existingFingerprints = merged.SecurityRequirements
+            .Select(GetSecurityRequirementFingerprint)
+            .ToHashSet(StringComparer.Ordinal);
 
         foreach (var requirement in doc.SecurityRequirements)
-            merged.SecurityRequirements.Add(CloneSecurityRequirement(requirement, maps));
+        {
+            var cloned = CloneSecurityRequirement(requirement, maps);
+            var fingerprint = GetSecurityRequirementFingerprint(cloned);
+            if (existingFingerprints.Add(fingerprint))
+                merged.SecurityRequirements.Add(cloned);
+        }
+    }
+
+    private static OpenApiTag CloneTag(OpenApiTag tag)
+    {
+        return new OpenApiTag
+        {
+            Name = tag.Name,
+            Description = tag.Description,
+            ExternalDocs = tag.ExternalDocs is null ? null : CloneExternalDocs(tag.ExternalDocs),
+        };
+    }
+
+    private static OpenApiExternalDocs CloneExternalDocs(OpenApiExternalDocs docs)
+    {
+        return new OpenApiExternalDocs
+        {
+            Url = docs.Url,
+            Description = docs.Description,
+        };
+    }
+
+    private static string GetSecurityRequirementFingerprint(OpenApiSecurityRequirement requirement)
+    {
+        return string.Join("|", requirement
+            .Select(pair => new
+            {
+                Scheme = pair.Key.Reference?.Id ?? pair.Key.Name ?? pair.Key.Scheme ?? string.Empty,
+                Scopes = pair.Value?.OrderBy(scope => scope, StringComparer.Ordinal).ToArray() ?? [],
+            })
+            .OrderBy(pair => pair.Scheme, StringComparer.Ordinal)
+            .Select(pair => pair.Scheme + ":" + string.Join(",", pair.Scopes)));
     }
 
     private static OpenApiOperation CloneOperation(OpenApiOperation op, string opIdPrefix, SourceComponentMaps maps)

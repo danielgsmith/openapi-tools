@@ -11,7 +11,7 @@ public class MergerTests
     private static string ProductsPath => Path.Combine(AppContext.BaseDirectory, "samples", "products-api.yaml");
 
     private static async Task<(MergeResult Result, OpenApiMerger Merger)> MergeAsync(
-        SchemaConflictStrategy strategy = SchemaConflictStrategy.Rename,
+        MergeConflictResolution schemaConflict = MergeConflictResolution.RenameIncoming,
         string? usersPathPrefix = null,
         string? productsPathPrefix = null,
         string? usersOpIdPrefix = null,
@@ -24,13 +24,13 @@ public class MergerTests
         var config = new MergeConfiguration
         {
             Info = new MergeInfoConfiguration("Platform API", "1.0.0", "Merged API"),
-            SchemaConflict = strategy,
             Sources =
             [
                 new SourceConfiguration(UsersPath, usersPathPrefix, usersOpIdPrefix, "Users"),
                 new SourceConfiguration(ProductsPath, productsPathPrefix, productsOpIdPrefix, "Products"),
             ],
         };
+        config.Conflicts.Schemas = config.Conflicts.Schemas with { Conflict = schemaConflict };
 
         var merger = new OpenApiMerger();
         var result = merger.Merge(config, new List<(SourceConfiguration, OpenApiDocument)>
@@ -98,7 +98,6 @@ public class MergerTests
         {
             Info = new MergeInfoConfiguration("Platform API", "1.0.0"),
             Servers = [new MergeServerConfiguration("https://api.example.com", "Production")],
-            SchemaConflict = SchemaConflictStrategy.Rename,
             Sources = [new SourceConfiguration(UsersPath, Name: "Users")],
         };
 
@@ -117,7 +116,7 @@ public class MergerTests
     [Fact]
     public async Task Merge_Rename_Should_Rename_Conflicting_Schemas()
     {
-        var (result, _) = await MergeAsync(strategy: SchemaConflictStrategy.Rename);
+        var (result, _) = await MergeAsync(schemaConflict: MergeConflictResolution.RenameIncoming);
 
         var schemaNames = result.Document.Components?.Schemas?.Keys ?? [];
         Assert.Contains("Error", schemaNames);
@@ -125,23 +124,23 @@ public class MergerTests
     }
 
     [Fact]
-    public async Task Merge_FirstWins_Should_Keep_First_Schema_And_Warn()
+    public async Task Merge_KeepExisting_Should_Keep_First_Schema_And_Warn()
     {
-        var (result, _) = await MergeAsync(strategy: SchemaConflictStrategy.FirstWins);
+        var (result, _) = await MergeAsync(schemaConflict: MergeConflictResolution.KeepExisting);
 
         var schemaNames = result.Document.Components?.Schemas?.Keys ?? [];
         Assert.Contains("Error", schemaNames);
         Assert.DoesNotContain("Products_Error", schemaNames);
 
-        Assert.Contains(result.Warnings, w => w.Message.Contains("Error") && w.Message.Contains("first-wins"));
+        Assert.Contains(result.Warnings, w => w.Message.Contains("Error") && w.Message.Contains("keeping existing definition"));
     }
 
     [Fact]
     public async Task Merge_Fail_Should_Generate_Error_Warning()
     {
-        var (result, _) = await MergeAsync(strategy: SchemaConflictStrategy.Fail);
+        var (result, _) = await MergeAsync(schemaConflict: MergeConflictResolution.Fail);
 
-        Assert.Contains(result.Warnings, w => w.Message.StartsWith("ERROR") && w.Message.Contains("Error"));
+        Assert.Contains(result.Errors, w => w.Message.Contains("Error"));
     }
 
     [Fact]
@@ -156,11 +155,389 @@ public class MergerTests
     }
 
     [Fact]
-    public async Task Merge_Should_Warn_On_Duplicate_SecuritySchemes()
+    public async Task Merge_Should_Warn_On_Conflicting_SecuritySchemes()
     {
         var (result, _) = await MergeAsync();
 
-        Assert.Contains(result.Warnings, w => w.Message.Contains("ApiKey") && w.Message.Contains("already exists"));
+        Assert.Contains(result.Warnings, w => w.Message.Contains("Conflicting security scheme 'ApiKey'"));
+    }
+
+    [Fact]
+    public void Merge_Should_Deduplicate_Identical_Schemas_Without_Warning()
+    {
+        var first = new OpenApiDocument
+        {
+            Components = new OpenApiComponents
+            {
+                Schemas = new Dictionary<string, OpenApiSchema>
+                {
+                    ["Error"] = new()
+                    {
+                        Type = "object",
+                        Properties = new Dictionary<string, OpenApiSchema>
+                        {
+                            ["message"] = new() { Type = "string" },
+                        },
+                    },
+                },
+            },
+            Paths = new OpenApiPaths(),
+        };
+
+        var second = new OpenApiDocument
+        {
+            Components = new OpenApiComponents
+            {
+                Schemas = new Dictionary<string, OpenApiSchema>
+                {
+                    ["Error"] = new()
+                    {
+                        Properties = new Dictionary<string, OpenApiSchema>
+                        {
+                            ["message"] = new() { Type = "string" },
+                        },
+                        Type = "object",
+                    },
+                },
+            },
+            Paths = new OpenApiPaths(),
+        };
+
+        var config = new MergeConfiguration
+        {
+            Info = new MergeInfoConfiguration("Platform API", "1.0.0"),
+            Sources =
+            [
+                new SourceConfiguration("first.yaml", Name: "First"),
+                new SourceConfiguration("second.yaml", Name: "Second"),
+            ],
+        };
+        config.Conflicts.Schemas = config.Conflicts.Schemas with { Conflict = MergeConflictResolution.RenameIncoming };
+
+        var merger = new OpenApiMerger();
+        var result = merger.Merge(config, [(config.Sources[0], first), (config.Sources[1], second)]);
+
+        Assert.Single(result.Document.Components!.Schemas!);
+        Assert.Contains("Error", result.Document.Components.Schemas.Keys);
+        Assert.DoesNotContain(result.Warnings, w => w.Message.Contains("Error") && w.Message.Contains("renamed"));
+    }
+
+    [Fact]
+    public void Merge_Should_Rename_Conflicting_Responses_When_Configured()
+    {
+        var first = new OpenApiDocument
+        {
+            Components = new OpenApiComponents
+            {
+                Responses = new Dictionary<string, OpenApiResponse>
+                {
+                    ["Created"] = new()
+                    {
+                        Description = "Created A",
+                        Content = new Dictionary<string, OpenApiMediaType>
+                        {
+                            ["application/json"] = new() { Schema = new OpenApiSchema { Type = "string" } },
+                        },
+                    },
+                },
+            },
+            Paths = new OpenApiPaths
+            {
+                ["/a"] = new OpenApiPathItem
+                {
+                    Operations = new Dictionary<OperationType, OpenApiOperation>
+                    {
+                        [OperationType.Get] = new()
+                        {
+                            Responses = new OpenApiResponses
+                            {
+                                ["201"] = new OpenApiResponse
+                                {
+                                    Reference = new OpenApiReference { Type = ReferenceType.Response, Id = "Created" },
+                                    UnresolvedReference = true,
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+
+        var second = new OpenApiDocument
+        {
+            Components = new OpenApiComponents
+            {
+                Responses = new Dictionary<string, OpenApiResponse>
+                {
+                    ["Created"] = new()
+                    {
+                        Description = "Created B",
+                        Content = new Dictionary<string, OpenApiMediaType>
+                        {
+                            ["application/json"] = new() { Schema = new OpenApiSchema { Type = "integer" } },
+                        },
+                    },
+                },
+            },
+            Paths = new OpenApiPaths
+            {
+                ["/b"] = new OpenApiPathItem
+                {
+                    Operations = new Dictionary<OperationType, OpenApiOperation>
+                    {
+                        [OperationType.Get] = new()
+                        {
+                            Responses = new OpenApiResponses
+                            {
+                                ["201"] = new OpenApiResponse
+                                {
+                                    Reference = new OpenApiReference { Type = ReferenceType.Response, Id = "Created" },
+                                    UnresolvedReference = true,
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+
+        var config = new MergeConfiguration
+        {
+            Info = new MergeInfoConfiguration("Platform API", "1.0.0"),
+            Sources =
+            [
+                new SourceConfiguration("first.yaml", Name: "First"),
+                new SourceConfiguration("second.yaml", Name: "Second"),
+            ],
+        };
+        config.Conflicts.Responses = new MergeComponentConflictPolicy(
+            MergeDuplicateHandling.Dedupe,
+            MergeConflictResolution.RenameIncoming);
+
+        var merger = new OpenApiMerger();
+        var result = merger.Merge(config, [(config.Sources[0], first), (config.Sources[1], second)]);
+
+        Assert.Contains("Created", result.Document.Components!.Responses!.Keys);
+        Assert.Contains("Second_Created", result.Document.Components.Responses.Keys);
+        Assert.Equal("Created", result.Document.Paths["/a"].Operations[OperationType.Get].Responses["201"].Reference!.Id);
+        Assert.Equal("Second_Created", result.Document.Paths["/b"].Operations[OperationType.Get].Responses["201"].Reference!.Id);
+    }
+
+    [Fact]
+    public void Merge_Should_Replace_Conflicting_Responses_When_KeepIncoming_Is_Configured()
+    {
+        var first = new OpenApiDocument
+        {
+            Components = new OpenApiComponents
+            {
+                Responses = new Dictionary<string, OpenApiResponse>
+                {
+                    ["Created"] = new() { Description = "Created A" },
+                },
+            },
+            Paths = new OpenApiPaths(),
+        };
+
+        var second = new OpenApiDocument
+        {
+            Components = new OpenApiComponents
+            {
+                Responses = new Dictionary<string, OpenApiResponse>
+                {
+                    ["Created"] = new() { Description = "Created B" },
+                },
+            },
+            Paths = new OpenApiPaths(),
+        };
+
+        var config = new MergeConfiguration
+        {
+            Info = new MergeInfoConfiguration("Platform API", "1.0.0"),
+            Sources =
+            [
+                new SourceConfiguration("first.yaml", Name: "First"),
+                new SourceConfiguration("second.yaml", Name: "Second"),
+            ],
+        };
+        config.Conflicts.Responses = new MergeComponentConflictPolicy(
+            MergeDuplicateHandling.Dedupe,
+            MergeConflictResolution.KeepIncoming);
+
+        var merger = new OpenApiMerger();
+        var result = merger.Merge(config, [(config.Sources[0], first), (config.Sources[1], second)]);
+
+        Assert.Equal("Created B", result.Document.Components!.Responses!["Created"].Description);
+    }
+
+    [Fact]
+    public void Merge_Should_Rename_Existing_Response_When_Configured()
+    {
+        var first = new OpenApiDocument
+        {
+            Components = new OpenApiComponents
+            {
+                Responses = new Dictionary<string, OpenApiResponse>
+                {
+                    ["Created"] = new() { Description = "Created A" },
+                },
+            },
+            Paths = new OpenApiPaths
+            {
+                ["/a"] = new OpenApiPathItem
+                {
+                    Operations = new Dictionary<OperationType, OpenApiOperation>
+                    {
+                        [OperationType.Get] = new()
+                        {
+                            Responses = new OpenApiResponses
+                            {
+                                ["201"] = new OpenApiResponse
+                                {
+                                    Reference = new OpenApiReference { Type = ReferenceType.Response, Id = "Created" },
+                                    UnresolvedReference = true,
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+
+        var second = new OpenApiDocument
+        {
+            Components = new OpenApiComponents
+            {
+                Responses = new Dictionary<string, OpenApiResponse>
+                {
+                    ["Created"] = new() { Description = "Created B" },
+                },
+            },
+            Paths = new OpenApiPaths
+            {
+                ["/b"] = new OpenApiPathItem
+                {
+                    Operations = new Dictionary<OperationType, OpenApiOperation>
+                    {
+                        [OperationType.Get] = new()
+                        {
+                            Responses = new OpenApiResponses
+                            {
+                                ["201"] = new OpenApiResponse
+                                {
+                                    Reference = new OpenApiReference { Type = ReferenceType.Response, Id = "Created" },
+                                    UnresolvedReference = true,
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+
+        var config = new MergeConfiguration
+        {
+            Info = new MergeInfoConfiguration("Platform API", "1.0.0"),
+            Sources =
+            [
+                new SourceConfiguration("first.yaml", Name: "First"),
+                new SourceConfiguration("second.yaml", Name: "Second"),
+            ],
+        };
+        config.Conflicts.Responses = new MergeComponentConflictPolicy(MergeDuplicateHandling.Dedupe, MergeConflictResolution.RenameExisting);
+
+        var merger = new OpenApiMerger();
+        var result = merger.Merge(config, [(config.Sources[0], first), (config.Sources[1], second)]);
+
+        Assert.Contains("First_Created", result.Document.Components!.Responses!.Keys);
+        Assert.Contains("Created", result.Document.Components.Responses.Keys);
+        Assert.Equal("First_Created", result.Document.Paths["/a"].Operations[OperationType.Get].Responses["201"].Reference!.Id);
+        Assert.Equal("Created", result.Document.Paths["/b"].Operations[OperationType.Get].Responses["201"].Reference!.Id);
+    }
+
+    [Fact]
+    public void Merge_Should_Rename_Both_Responses_When_Configured()
+    {
+        var first = new OpenApiDocument
+        {
+            Components = new OpenApiComponents
+            {
+                Responses = new Dictionary<string, OpenApiResponse>
+                {
+                    ["Created"] = new() { Description = "Created A" },
+                },
+            },
+            Paths = new OpenApiPaths
+            {
+                ["/a"] = new OpenApiPathItem
+                {
+                    Operations = new Dictionary<OperationType, OpenApiOperation>
+                    {
+                        [OperationType.Get] = new()
+                        {
+                            Responses = new OpenApiResponses
+                            {
+                                ["201"] = new OpenApiResponse
+                                {
+                                    Reference = new OpenApiReference { Type = ReferenceType.Response, Id = "Created" },
+                                    UnresolvedReference = true,
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+
+        var second = new OpenApiDocument
+        {
+            Components = new OpenApiComponents
+            {
+                Responses = new Dictionary<string, OpenApiResponse>
+                {
+                    ["Created"] = new() { Description = "Created B" },
+                },
+            },
+            Paths = new OpenApiPaths
+            {
+                ["/b"] = new OpenApiPathItem
+                {
+                    Operations = new Dictionary<OperationType, OpenApiOperation>
+                    {
+                        [OperationType.Get] = new()
+                        {
+                            Responses = new OpenApiResponses
+                            {
+                                ["201"] = new OpenApiResponse
+                                {
+                                    Reference = new OpenApiReference { Type = ReferenceType.Response, Id = "Created" },
+                                    UnresolvedReference = true,
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+
+        var config = new MergeConfiguration
+        {
+            Info = new MergeInfoConfiguration("Platform API", "1.0.0"),
+            Sources =
+            [
+                new SourceConfiguration("first.yaml", Name: "First"),
+                new SourceConfiguration("second.yaml", Name: "Second"),
+            ],
+        };
+        config.Conflicts.Responses = new MergeComponentConflictPolicy(MergeDuplicateHandling.Dedupe, MergeConflictResolution.RenameBoth);
+
+        var merger = new OpenApiMerger();
+        var result = merger.Merge(config, [(config.Sources[0], first), (config.Sources[1], second)]);
+
+        Assert.Contains("First_Created", result.Document.Components!.Responses!.Keys);
+        Assert.Contains("Second_Created", result.Document.Components.Responses.Keys);
+        Assert.DoesNotContain("Created", result.Document.Components.Responses.Keys);
+        Assert.Equal("First_Created", result.Document.Paths["/a"].Operations[OperationType.Get].Responses["201"].Reference!.Id);
+        Assert.Equal("Second_Created", result.Document.Paths["/b"].Operations[OperationType.Get].Responses["201"].Reference!.Id);
     }
 
     [Fact]
@@ -180,6 +557,103 @@ public class MergerTests
     }
 
     [Fact]
+    public void Merge_Should_Enrich_Existing_Tag_Metadata()
+    {
+        var first = new OpenApiDocument
+        {
+            Tags = [new OpenApiTag { Name = "users" }],
+            Paths = new OpenApiPaths(),
+        };
+
+        var second = new OpenApiDocument
+        {
+            Tags =
+            [
+                new OpenApiTag
+                {
+                    Name = "users",
+                    Description = "User operations",
+                    ExternalDocs = new OpenApiExternalDocs
+                    {
+                        Url = new Uri("https://example.com/users"),
+                        Description = "Users docs",
+                    },
+                },
+            ],
+            Paths = new OpenApiPaths(),
+        };
+
+        var config = new MergeConfiguration
+        {
+            Info = new MergeInfoConfiguration("Platform API", "1.0.0"),
+            Sources =
+            [
+                new SourceConfiguration("first.yaml", Name: "First"),
+                new SourceConfiguration("second.yaml", Name: "Second"),
+            ],
+        };
+
+        var merger = new OpenApiMerger();
+        var result = merger.Merge(config, [(config.Sources[0], first), (config.Sources[1], second)]);
+
+        var tag = Assert.Single(result.Document.Tags!);
+        Assert.Equal("User operations", tag.Description);
+        Assert.Equal(new Uri("https://example.com/users"), tag.ExternalDocs!.Url);
+    }
+
+    [Fact]
+    public void Merge_Should_Deduplicate_Document_Security_Requirements()
+    {
+        var sharedScheme = new OpenApiSecurityScheme
+        {
+            Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "ApiKey" },
+            UnresolvedReference = true,
+        };
+
+        var requirement = new OpenApiSecurityRequirement
+        {
+            [sharedScheme] = ["read"],
+        };
+
+        var first = new OpenApiDocument
+        {
+            SecurityRequirements = [requirement],
+            Paths = new OpenApiPaths(),
+        };
+
+        var second = new OpenApiDocument
+        {
+            SecurityRequirements =
+            [
+                new OpenApiSecurityRequirement
+                {
+                    [new OpenApiSecurityScheme
+                    {
+                        Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "ApiKey" },
+                        UnresolvedReference = true,
+                    }] = ["read"],
+                },
+            ],
+            Paths = new OpenApiPaths(),
+        };
+
+        var config = new MergeConfiguration
+        {
+            Info = new MergeInfoConfiguration("Platform API", "1.0.0"),
+            Sources =
+            [
+                new SourceConfiguration("first.yaml", Name: "First"),
+                new SourceConfiguration("second.yaml", Name: "Second"),
+            ],
+        };
+
+        var merger = new OpenApiMerger();
+        var result = merger.Merge(config, [(config.Sources[0], first), (config.Sources[1], second)]);
+
+        Assert.Single(result.Document.SecurityRequirements!);
+    }
+
+    [Fact]
     public async Task Merge_Should_Not_Duplicate_Identical_Paths()
     {
         var (result, _) = await MergeAsync();
@@ -190,7 +664,7 @@ public class MergerTests
     [Fact]
     public async Task Merge_Rename_Should_Preserve_Unique_Schemas()
     {
-        var (result, _) = await MergeAsync(strategy: SchemaConflictStrategy.Rename);
+        var (result, _) = await MergeAsync(schemaConflict: MergeConflictResolution.RenameIncoming);
 
         var schemaNames = result.Document.Components?.Schemas?.Keys ?? [];
         Assert.Contains("User", schemaNames);

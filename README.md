@@ -43,6 +43,7 @@ openapi-tool validate ./openapi.yaml
 openapi-tool convert ./openapi.yaml --format json -o openapi.json
 openapi-tool diff ./v1.yaml ./v2.yaml --breaking-only
 openapi-tool merge --title "Platform API" --version "1.0" -o merged.json api1.yaml api2.yaml
+openapi-tool merge --schema-conflict rename-incoming --schema-identical warn-and-dedupe --title "Platform API" --version "1.0" api1.yaml api2.yaml
 ```
 
 Run `openapi-tool --help` to list all available commands.

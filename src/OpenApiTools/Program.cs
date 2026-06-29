@@ -34,6 +34,8 @@ internal static class Program
         services.AddSingleton<IOpenApiDiffer, OpenApiDiffer>();
         services.AddSingleton<IOpenApiResolver, OpenApiResolver>();
         services.AddSingleton<IOpenApiSplitter, OpenApiSplitter>();
+        services.AddSingleton<IOpenApiComponentComparer, OpenApiComponentComparer>();
+        services.AddSingleton<IOpenApiConflictDetector, OpenApiConflictDetector>();
         services.AddSingleton<IOpenApiMerger, OpenApiMerger>();
     }
 

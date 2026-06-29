@@ -6,21 +6,88 @@ namespace OpenApiTools.Tests;
 public class MergeConfigurationLoaderTests
 {
     [Fact]
-    public void Load_Should_Parse_SchemaConflict_Enum_From_String()
+    public void Load_Should_Parse_Schema_Conflict_Policy_From_Config()
     {
         var path = WriteTempJson(
             """
             {
               "info": { "title": "API", "version": "1.0.0" },
               "sources": [{ "path": "./a.yaml" }],
-              "schemaConflict": "first-wins"
+              "conflicts": {
+                "schemas": {
+                  "conflict": "keep-existing"
+                }
+              }
             }
             """);
 
         try
         {
             var config = MergeConfigurationLoader.Load(path);
-            Assert.Equal(SchemaConflictStrategy.FirstWins, config.SchemaConflict);
+            Assert.Equal(MergeConflictResolution.KeepExisting, config.Conflicts.Schemas.Conflict);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Load_Should_Parse_Rich_Component_Conflict_Policies()
+    {
+        var path = WriteTempJson(
+            """
+            {
+              "info": { "title": "API", "version": "1.0.0" },
+              "sources": [{ "path": "./a.yaml" }],
+              "conflicts": {
+                "schemas": {
+                  "identical": "warn-and-dedupe",
+                  "conflict": "rename-incoming"
+                },
+                "responses": {
+                  "identical": "fail",
+                  "conflict": "rename-existing"
+                }
+              }
+            }
+            """);
+
+        try
+        {
+            var config = MergeConfigurationLoader.Load(path);
+            Assert.Equal(MergeDuplicateHandling.WarnAndDedupe, config.Conflicts.Schemas.Identical);
+            Assert.Equal(MergeConflictResolution.RenameIncoming, config.Conflicts.Schemas.Conflict);
+            Assert.Equal(MergeDuplicateHandling.Fail, config.Conflicts.Responses.Identical);
+            Assert.Equal(MergeConflictResolution.RenameExisting, config.Conflicts.Responses.Conflict);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Load_Should_Fail_On_Invalid_Conflict_Policy_Value()
+    {
+        var path = WriteTempJson(
+            """
+            {
+              "info": { "title": "API", "version": "1.0.0" },
+              "sources": [{ "path": "./a.yaml" }],
+              "conflicts": {
+                "schemas": {
+                  "conflict": "totally-unknown"
+                }
+              }
+            }
+            """);
+
+        try
+        {
+            var ex = Assert.Throws<InvalidOperationException>(() => MergeConfigurationLoader.Load(path));
+            Assert.Contains("totally-unknown", ex.Message);
+            Assert.Contains("schemas.conflict", ex.Message);
         }
         finally
         {
